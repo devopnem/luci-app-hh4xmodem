@@ -1,0 +1,21 @@
+# Editor / OS cruft
+*~
+*.swp
+*.swo
+.DS_Store
+
+# Build output (anchored: root/usr/bin is part of the package)
+*.apk
+*.ipk
+/build_dir/
+/bin/
+/staging_dir/
+/tmp/
+/dl/
+*.o
+*.so
+
+# Local OpenWrt buildroot overlay, if the package is cloned inside one
+openwrt-*/
+feeds.conf.default
+feeds.conf

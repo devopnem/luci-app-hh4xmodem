@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in luci-app-hh4xmodem does not work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. This package talks to the
+        modem's HTTP API, so hardware and firmware details matter a lot here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: router
+    attributes:
+      label: Router model
+      placeholder: HH40V or HH41V
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: OpenWrt version
+      placeholder: 25.12.5
+    validations:
+      required: true
+
+  - type: input
+    id: modem
+    attributes:
+      label: Modem revision
+      description: Shown on the dashboard Info tab
+      placeholder: MDM9207 ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of the following, with the modem unreachable lines intact
+      render: shell
+      value: |
+        logread | grep -i -e hh4x -e rpcd | tail -50
+        uci show hh4xmodem
+    validations:
+      required: false

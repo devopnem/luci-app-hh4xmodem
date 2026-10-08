@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest an improvement or new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow you want. What does the modem or the router do that is hard today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional. A rough idea is fine.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: api
+    attributes:
+      label: API method
+      description: |
+        The backend already exposes a large set of MDM9207 HTTP API methods.
+        If you know which one your request needs, tick it so it can be mapped
+        straight onto an existing call.
+      options:
+        - label: I have identified the HTTP API method this needs
+          required: false
+
+  - type: checkboxes
+    id: contrib
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to send a pull request for this
+          required: false
