@@ -2,7 +2,7 @@
 
 # luci-app-hh4xmodem
 
-**A LuCI interface for the MDM9207 modem in Ooredoo HH40V / HH41V routers.**
+**A LuCI interface for the MDM9207 modem in HH40V / HH41V routers.**
 
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-23.05%20|%2024.10%20|%2025.12-00a9d7?logo=openwrt&logoColor=white)](https://openwrt.org/)
 [![LuCI](https://img.shields.io/badge/LuCI-app-22c55e?logo=openwrt&logoColor=white)](https://github.com/openwrt/luci)
@@ -55,7 +55,7 @@ The dashboard has four tabs:
 
 | | |
 | --- | --- |
-| **Router** | Ooredoo **HH40V** or **HH41V** (Qualcomm **MDM9207** modem) |
+| **Router** | **HH40V** or **HH41V** (Qualcomm **MDM9207** modem) |
 | **Firmware** | OpenWrt with LuCI, `23.05` and newer (developed and tested on `25.12`) |
 | **Packages** | `luci-base`, `ucode-mod-socket` — pulled in automatically |
 
