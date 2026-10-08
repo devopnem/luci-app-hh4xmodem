@@ -1,0 +1,4 @@
+# Enables the "Sponsor" button on the repository.
+# Donations are accepted as USDT on Tron (TRC20); see the Donate section of README.md.
+custom:
+  - https://redotpay.com/
