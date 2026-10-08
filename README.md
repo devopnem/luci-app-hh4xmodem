@@ -8,7 +8,7 @@
 [![LuCI](https://img.shields.io/badge/LuCI-app-22c55e?logo=openwrt&logoColor=white)](https://github.com/openwrt/luci)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/devopnem/luci-app-hh4xmodem?label=Release&color=blue)](https://github.com/devopnem/luci-app-hh4xmodem/releases/latest)
-[![Sponsor](https://img.shields.io/badge/sponsor-♥-redotpay-orange)](https://redotpay.com/)
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%99%A5-redotpay-orange)](#donate)
 
 Monitor signal, switch network modes, manage SMS, USSD codes and call logs — straight
 from LuCI, over the modem's local HTTP API. No cloud, no external services.
@@ -207,6 +207,10 @@ If it saved you some time, a small donation helps fund the next device.
 ```text
 TTGuQF2zyJNsNJrUBfCxazbK8e9v7qkMLk
 ```
+
+<p align="center">
+  <a href="https://redotpay.com/"><img src="https://img.shields.io/badge/Donate%20via%20RedotPay-ff5a3c?style=for-the-badge&logo=bitcoin&logoColor=white" alt="Donate via RedotPay"></a>
+</p>
 
 <div align="center">
 
