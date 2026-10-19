@@ -120,6 +120,20 @@ make package/luci-app-hh4xmodem/compile V=s
 
 The resulting package lands in `bin/packages/*/*/luci-app-hh4xmodem-*.apk`.
 
+### Building the .apk without a buildroot
+
+The package is pure scripts and static assets, so no compiler is needed.
+`build-apk.sh` builds it straight with the `apk` tool from an OpenWrt
+ImageBuilder:
+
+```sh
+./build-apk.sh
+```
+
+It writes the package next to the sources and stages a copy into the
+imagebuilder's `packages/` directory, ready to be baked into an image.
+Override `SRC`, `IB` or `PKGVER` in the environment if your paths differ.
+
 ### Finish up
 
 ```sh
