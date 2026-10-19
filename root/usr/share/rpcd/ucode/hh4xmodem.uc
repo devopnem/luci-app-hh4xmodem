@@ -181,10 +181,44 @@ function clear_call_log() {
 }
 
 
+// SIM state 7 = Ready (see simStateLabel in the UI). Anything else means the
+// modem cannot reach the network at all, so a request that needs the SIM would
+// either hang until it times out or come back with a misleading modem error:
+// with no SIM, SendUSSD never replies (the UI sees an XHR timeout) and SendSMS
+// reports "Fail with store space full" (060603), because the SMS store is
+// unusable without one. Reject up front with the real reason instead.
+function sim_blocked_reason(state) {
+	if (state == 0) return 'no SIM is inserted';
+	if (state == 1) return 'the SIM is not ready yet';
+	if (state == 2) return 'the SIM is locked (PIN required)';
+	if (state == 3) return 'the SIM is locked (PUK required)';
+	if (state == 4) return 'the SIM is network-locked (NCK required)';
+	if (state == 5) return 'the PUK is blocked';
+	if (state == 6) return 'the SIM is invalid';
+	if (state == 11) return 'the SIM is initialising';
+	return 'the SIM is not ready (state ' + state + ')';
+}
+
+// Returns an error object when the SIM is unusable, or null when it is ready.
+function sim_blocked_error(action) {
+	let s = pack_call('GetSimStatus');
+	// A failed read must not block the action: the modem may be busy, and
+	// refusing to send on a transport hiccup would be worse than letting the
+	// modem answer for itself.
+	if (type(s) != 'object' || s.error != null || s.SIMState == null)
+		return null;
+	let state = int(s.SIMState);
+	if (state == 7) return null;
+	return { error: sprintf('Cannot %s: %s', action, sim_blocked_reason(state)),
+		 code: -1, simState: state };
+}
+
 function send_ussd(code) {
 	if (code == null) return { error: 'Missing USSD code', code: -1 };
 	code = trim(code);
 	if (!length(code)) return { error: 'Empty USSD code', code: -1 };
+	let blocked = sim_blocked_error('send a USSD code');
+	if (blocked != null) return blocked;
 	// end any lingering session so we start a fresh request
 	pack_call('SetUSSDEnd', '{}');
 	sleep(2000);
@@ -281,6 +315,8 @@ function send_sms(phone, content) {
 	phone = trim(phone);
 	content = trim(content);
 	if (!length(phone) || !length(content)) return { error: 'Empty phone or content', code: -1 };
+	let blocked = sim_blocked_error('send an SMS');
+	if (blocked != null) return blocked;
 	let r = pack_call('SendSMS', sprintf('{"PhoneNumber":%J,"SMSContent":%J,"SMSId":-1}',
 		phone, content));
 	if (r == null) return { error: 'Send SMS failed: no response', code: -1 };

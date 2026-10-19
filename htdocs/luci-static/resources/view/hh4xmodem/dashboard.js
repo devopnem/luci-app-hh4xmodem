@@ -236,30 +236,152 @@ function createInfoRow(label, value, className) {
 	]);
 }
 
+// getCurrentProfile (module 5, act 7) reports the modem's *current* APN profile.
+// On the MDM9207 it very commonly comes back as ProfileName "NULL" with an
+// empty APN, and verified against a live HH41V both are legitimate, not errors:
+//
+//   * "NULL" means "no name configured", NOT "no profile". The profile is real:
+//     it carries a ProfileID and is usually the Default one.
+//   * An empty APN while the data connection is up genuinely means the
+//     network supplies the APN, so "Auto (Network Provided)" is the right
+//     label there.
+//
+// So the only thing that must never reach the screen is the literal string
+// "NULL" sitting in the Current Profile row as if it were a profile name.
+// Normalise once here so both cards agree.
+function parseActiveProfile(raw, connected) {
+	var res = {
+		queryFailed: false, queryError: null,
+		hasProfile: false, name: null, apn: null,
+		connected: !!connected
+	};
+
+	if (raw == null) return res;
+
+	if (typeof raw === 'object' && raw.error != null) {
+		res.queryFailed = true;
+		res.queryError = String(raw.error);
+		return res;
+	}
+
+	var cleanName = (raw.ProfileName != null) ? String(raw.ProfileName).trim() : '';
+	var cleanApn = (raw.APN != null) ? String(raw.APN).trim() : '';
+
+	// The modem sends the *string* "NULL", not JSON null, for "not named".
+	if (cleanName.toUpperCase() === 'NULL') cleanName = '';
+
+	res.name = cleanName || null;
+	res.apn = cleanApn || null;
+	// A ProfileID means a profile really exists even when it is unnamed.
+	res.hasProfile = res.name != null || raw.ProfileID != null;
+	return res;
+}
+
+function activeProfileName(p) {
+	if (p.queryFailed) return _('Unavailable');
+	if (p.hasProfile) return p.name != null ? p.name : _('Not set (auto)');
+	return _('None reported by modem');
+}
+
+function activeApnLabel(p) {
+	if (p.queryFailed) return _('Unavailable');
+	if (p.apn != null) return p.apn;
+	// An empty APN only means "auto" while the data connection is actually up.
+	// Otherwise the modem has nothing to report at all.
+	return p.connected ? _('Auto (Network Provided)') : _('Unknown - no active profile');
+}
+
+// Explain *why* the profile looks the way it does -- but only when there is
+// genuinely something wrong. An unnamed profile on a working connection is
+// normal modem behaviour and must not raise a false alarm.
+// Returns null when there is nothing to warn about.
+function createActiveProfileWarning(raw, connected) {
+	var p = parseActiveProfile(raw, connected);
+
+	if (p.queryFailed) {
+		return E('div', { 'class': 'hh4x-warning' }, [
+			E('span', { 'class': 'hh4x-warning-icon' }, ['⚠']),
+			E('span', {}, [_('The modem did not report the active APN profile (%s).').format(p.queryError)])
+		]);
+	}
+
+	if (!p.hasProfile) {
+		return E('div', { 'class': 'hh4x-warning' }, [
+			E('span', { 'class': 'hh4x-warning-icon' }, ['⚠']),
+			E('span', {}, [_('The modem reports no APN profile. The data connection is most likely down; connect and reload this page.')])
+		]);
+	}
+
+	// Unnamed profile, no APN, and no connection: this is the one real failure
+	// mode -- the modem has nothing it can bring a PDP context up with.
+	if (!p.connected && p.apn == null) {
+		return E('div', { 'class': 'hh4x-warning' }, [
+			E('span', { 'class': 'hh4x-warning-icon' }, ['⚠']),
+			E('span', {}, [_('The current profile has no APN, so the data connection cannot come up. Add a profile with your operator APN and set it as default.')])
+		]);
+	}
+
+	return null;
+}
+
 function getSignalMetrics(signal) {
 	var netType = parseInt(signal.NetworkType) || 0;
 	if (netType === 8 || netType === 9) {
 		return [
-			{ label: 'RSRP', field: 'RSRP', unit: 'dBm', type: 'rsrp' },
-			{ label: 'RSSI', field: 'RSSI', unit: 'dBm', type: 'rssi' },
-			{ label: 'RSRQ', field: 'RSRQ', unit: 'dB', type: 'rsrq' },
-			{ label: 'SINR', field: 'SINR', unit: 'dB', type: 'sinr' }
+			{ label: 'RSRP', field: 'RSRP', unit: 'dBm', type: 'rsrp', min: -140, max: -44 },
+			{ label: 'RSSI', field: 'RSSI', unit: 'dBm', type: 'rssi', min: -114, max: -51 },
+			{ label: 'RSRQ', field: 'RSRQ', unit: 'dB', type: 'rsrq', min: -20, max: -3 },
+			{ label: 'SINR', field: 'SINR', unit: 'dB', type: 'sinr', min: -20, max: 30 }
 		];
 	}
 	if (netType >= 4 && netType <= 7) {
 		return [
-			{ label: 'RSCP', field: 'RSCP', unit: 'dBm', type: 'rsrp' },
-			{ label: 'RSSI', field: 'RSSI', unit: 'dBm', type: 'rssi' },
-			{ label: 'RSRQ', field: 'RSRQ', unit: 'dB', type: 'rsrq' },
-			{ label: 'Ec/Io', field: 'EcIo', unit: 'dB', type: 'ecio' }
+			{ label: 'RSCP', field: 'RSCP', unit: 'dBm', type: 'rsrp', min: -120, max: -25 },
+			{ label: 'RSSI', field: 'RSSI', unit: 'dBm', type: 'rssi', min: -114, max: -51 },
+			{ label: 'RSRQ', field: 'RSRQ', unit: 'dB', type: 'rsrq', min: -20, max: -3 },
+			{ label: 'Ec/Io', field: 'EcIo', unit: 'dB', type: 'ecio', min: -20, max: -0.01 }
 		];
 	}
 	return [
-		{ label: 'RSSI', field: 'RSSI', unit: 'dBm', type: 'rssi' },
-		{ label: 'RSCP', field: 'RSCP', unit: 'dBm', type: 'rsrp' },
-		{ label: 'RSRQ', field: 'RSRQ', unit: 'dB', type: 'rsrq' },
-		{ label: 'Ec/Io', field: 'EcIo', unit: 'dB', type: 'ecio' }
+		{ label: 'RSSI', field: 'RSSI', unit: 'dBm', type: 'rssi', min: -114, max: -51 },
+		{ label: 'RSCP', field: 'RSCP', unit: 'dBm', type: 'rsrp', min: -120, max: -25 },
+		{ label: 'RSRQ', field: 'RSRQ', unit: 'dB', type: 'rsrq', min: -20, max: -3 },
+		{ label: 'Ec/Io', field: 'EcIo', unit: 'dB', type: 'ecio', min: -20, max: -0.01 }
 	];
+}
+
+// Returns a number only when the modem reported something that is a real
+// measurement for this metric, or null when the value is noise.
+//
+// When the modem is not attached (notably: no SIM inserted) it keeps reporting
+// whatever it last measured, plus out-of-range sentinels -- an RSRP of -1 dBm
+// and an RSRQ of -9 dB are what the MDM9207 hands back in that state. Drawing
+// those as live signal bars is worse than showing nothing, so reject any value
+// outside the 3GPP range for the metric.
+function signalMetricValue(signal, m) {
+	var val = signal[m.field];
+	if (val == null || val === '' || val === 'reserved') return null;
+	var num = parseFloat(val);
+	if (isNaN(num)) return null;
+	if (m.min != null && (num < m.min || num > m.max)) return null;
+	return num;
+}
+
+// Radio readings are meaningless without a usable SIM, so say why instead of
+// showing stale numbers. SIM state 7 = Ready. Returns null when the SIM is
+// usable and the readings can be trusted.
+function simSignalProblem(sim) {
+	var state = (sim && sim.SIMState != null) ? parseInt(sim.SIMState) : null;
+	if (state == 7) return null;
+	if (state == 0) return _('Signal data is unavailable: no SIM is inserted. Insert a SIM and reload this page.');
+	if (state == 1) return _('Signal data is unavailable: the SIM is not ready yet. Wait a moment and reload this page.');
+	if (state == 2) return _('Signal data is unavailable: the SIM is locked and needs your PIN. Enter it and reload this page.');
+	if (state == 3) return _('Signal data is unavailable: the SIM is locked and needs your PUK. Enter it and reload this page.');
+	if (state == 4) return _('Signal data is unavailable: the SIM is network-locked (NCK required).');
+	if (state == 5) return _('Signal data is unavailable: the PUK is blocked.');
+	if (state == 6) return _('Signal data is unavailable: the SIM is invalid.');
+	if (state == 11) return _('Signal data is unavailable: the SIM is initialising. Wait a moment and reload this page.');
+	return _('Signal data is unavailable: the modem did not report a usable SIM state.');
 }
 
 function createSignalIndicator(label, value, unit, type) {
@@ -582,7 +704,7 @@ function parseContext(modemData) {
 }
 
 function renderStatusTab(ctx) {
-	var signal = ctx.signal, status = ctx.status, conn = ctx.conn;
+	var signal = ctx.signal, status = ctx.status, conn = ctx.conn, sim = ctx.sim;
 
 	var connState = conn.ConnectionStatus != null ? conn.ConnectionStatus : status.ConnectionStatus;
 	var isConnected = connState == 2;
@@ -655,36 +777,61 @@ function renderStatusTab(ctx) {
 				createInfoRow('Download Speed', formatSpeed(conn.Speed_Dl)),
 				createInfoRow('Upload Speed', formatSpeed(conn.Speed_Ul)),
 				createInfoRow('Connection Time', formatDuration(conn.ConnectionTime)),
-				createInfoRow('Roaming', conn.Domestic_Roaming == 1 ? _('Yes') : _('No'))
+				// The roaming flag lives in GetNetworkInfo, NOT GetConnectionState:
+				// the connection response has no roaming field whatsoever, so
+				// reading it from there left the value undefined and this row
+				// rendered a hard "No" even while the modem was roaming.
+				(function () {
+					var v = signal.Roaming;
+					if (v == null) v = signal.Domestic_Roaming;
+					if (v == null) return createInfoRow(_('Roaming (active)'), _('Unknown'));
+					return createInfoRow(_('Roaming (active)'), v == 1 ? _('Yes') : _('No'));
+				})()
 			]),
-			createCard('Signal Quality', [
-				E('div', { 'class': 'hh4x-signal-grid' }, (function() {
-					var sigMetrics = getSignalMetrics(signal);
-					return sigMetrics.map(function(m) {
-						var val = signal[m.field];
-						if (val == null || val === 'reserved' || val === '' || parseFloat(val) === 0)
-							return createInfoRow(m.label, '--');
-						return createSignalIndicator(m.label, val, m.unit, m.type);
-					});
-				})()),
-				E('hr', { 'class': 'hh4x-divider' }),
-				createInfoRow('Signal Level', signal.SignalStrength != null ? signal.SignalStrength + '/5' : '--'),
-				createInfoRow('Band', signal.Band ? 'Band ' + signal.Band : '--'),
-				createInfoRow('Cell ID', signal.CellId || '--'),
-				createInfoRow('eNB ID', signal.eNBID || '--'),
-				createInfoRow('PLMN', signal.PLMN || '--'),
-				createInfoRow('MCC/MNC', signal.mcc && signal.mnc ? signal.mcc + '/' + signal.mnc : '--'),
-				createInfoRow('CGI', signal.CGI || '--')
-			])
+			createCard('Signal Quality', (function () {
+				// Without a usable SIM every radio number below is stale modem
+				// residue, so blank the whole card and explain why.
+				var problem = simSignalProblem(sim);
+				var radioOk = (problem == null);
+
+				var items = [];
+				if (!radioOk) {
+					items.push(E('div', { 'class': 'hh4x-warning' }, [
+						E('span', { 'class': 'hh4x-warning-icon' }, ['⚠']),
+						E('span', {}, [problem])
+					]));
+				}
+				items.push(E('div', { 'class': 'hh4x-signal-grid' }, getSignalMetrics(signal).map(function (m) {
+					var val = radioOk ? signalMetricValue(signal, m) : null;
+					if (val == null)
+						return createInfoRow(m.label, '--');
+					return createSignalIndicator(m.label, val, m.unit, m.type);
+				})));
+				items.push(E('hr', { 'class': 'hh4x-divider' }));
+				items.push(createInfoRow('Signal Level',
+					radioOk && signal.SignalStrength != null ? signal.SignalStrength + '/5' : '--'));
+				items.push(createInfoRow('Band', radioOk && signal.Band ? 'Band ' + signal.Band : '--'));
+				items.push(createInfoRow('Cell ID', radioOk ? (signal.CellId || '--') : '--'));
+				items.push(createInfoRow('eNB ID', radioOk ? (signal.eNBID || '--') : '--'));
+				items.push(createInfoRow('PLMN', radioOk ? (signal.PLMN || '--') : '--'));
+				items.push(createInfoRow('MCC/MNC',
+					radioOk && signal.mcc && signal.mnc ? signal.mcc + '/' + signal.mnc : '--'));
+				items.push(createInfoRow('CGI', radioOk ? (signal.CGI || '--') : '--'));
+				return items;
+			})())
 		])
 	]);
 }
 
 function renderNetworkTab(ctx) {
 	var network = ctx.network, signal = ctx.signal, reg = ctx.reg,
-		curProfile = ctx.curProfile, connSet = ctx.connSet, profiles = ctx.profiles;
+		curProfile = ctx.curProfile, connSet = ctx.connSet, profiles = ctx.profiles,
+		conn = ctx.conn;
 
+	var isConnected = conn.ConnectionStatus != null ? conn.ConnectionStatus == 2
+		: ctx.status.ConnectionStatus == 2;
 	var currentMode = network.NetworkMode;
+	var activeProfile = parseActiveProfile(curProfile, isConnected);
 	var currentLabel = 'Unknown';
 	for (var m of networkModes) {
 		if (m.value === currentMode) {
@@ -706,7 +853,11 @@ function renderNetworkTab(ctx) {
 				E('hr', { 'class': 'hh4x-divider' }),
 				createInfoRow('Band Selection', network.NetselectionMode === 1 ? _('Automatic') : _('Manual')),
 				createInfoRow('Network Band', network.NetworkBand == null || network.NetworkBand == 255 ? _('All') : network.NetworkBand),
-				createInfoRow('Roaming', network.DomesticRoam == 1 || network.NetworkRoaming == 1 ? _('Enabled') : _('Disabled'))
+				// This is DomesticRoam (SetNetworkSettings), NOT the RoamingConnect
+				// in the Connection Mode card. They are separate modem settings in
+				// separate subsystems, and both were labelled just "Roaming", which
+				// made it look like the checkbox had not saved when it had.
+				createInfoRow('Allow Domestic Roaming', network.DomesticRoam == 1 || network.NetworkRoaming == 1 ? _('Enabled') : _('Disabled'))
 			]),
 			createCard('Change Network Mode', [
 				E('div', { 'class': 'hh4x-warning' }, [
@@ -767,7 +918,8 @@ function renderNetworkTab(ctx) {
 				createInfoRow('Registration State', reg.regist_state >= 1 || reg.RegisterState >= 1 ? _('Registered') : _('Not Registered')),
 				createInfoRow('Network Operator', reg.NetworkFullName || signal.NetworkName || signal.PLMN_name || reg.PLMN || '--'),
 				E('hr', { 'class': 'hh4x-divider' }),
-				createInfoRow('Current APN', curProfile.APN ? String(curProfile.APN) : _('Auto (Network Provided)')),
+				createInfoRow('Current APN', activeApnLabel(activeProfile),
+					activeProfile.apn == null && !activeProfile.connected ? 'hh4x-info-row-warn' : null),
 				createInfoRow('Connection Mode', connSet.ConnectMode == 1 ? _('Automatic') : _('Manual')),
 				createInfoRow('PDP Type', connSet.PdpType != null ? pdpTypeLabel(connSet.PdpType) : '--')
 			]),
@@ -791,6 +943,9 @@ function renderNetworkTab(ctx) {
 					E('label', { 'style': 'display:flex;align-items:center;gap:8px;' }, [
 						E('input', { 'type': 'checkbox', 'id': 'roaming-connect', 'checked': (connSet.RoamingConnect == 1) ? true : undefined }),
 						_('Roaming Connect')
+					]),
+					E('div', { 'style': 'color:var(--text-color-medium);font-size:0.85em;margin-top:0.2em;' }, [
+						_('Allow the modem to stay connected while roaming. This is separate from "Roaming (active)" on the Status page (whether the modem is roaming right now) and from "Allow Domestic Roaming" in the Network tab (a different modem setting).')
 					])
 				]),
 				E('hr', { 'class': 'hh4x-divider' }),
@@ -831,8 +986,14 @@ function renderNetworkTab(ctx) {
 		E('div', { 'class': 'hh4x-row' }, [
 			createCard('APN Profiles', function () {
 				var items = [];
-				items.push(createInfoRow(_('Current Profile'), curProfile.ProfileName || '--'));
-				items.push(createInfoRow(_('Active APN'), curProfile.APN ? String(curProfile.APN) : _('Auto (Network Provided)')));
+				items.push(createInfoRow(_('Current Profile'), activeProfileName(activeProfile),
+					activeProfile.hasProfile ? null : 'hh4x-info-row-warn'));
+				items.push(createInfoRow(_('Active APN'), activeApnLabel(activeProfile),
+					activeProfile.apn == null && !activeProfile.connected ? 'hh4x-info-row-warn' : null));
+				var activeProfileWarning = createActiveProfileWarning(curProfile, isConnected);
+				if (activeProfileWarning) {
+					items.push(E('div', { 'style': 'margin:0.6em 0;' }, [activeProfileWarning]));
+				}
 				items.push(E('hr', { 'class': 'hh4x-divider' }));
 				var list = profiles.ProfileList || [];
 				if (list.length === 0) {

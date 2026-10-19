@@ -20,6 +20,15 @@
 'require ui';
 'require view';
 
+// .ussd-output and .hh4x-warning both live in this stylesheet.
+if (!document.querySelector('link[href*="hh4xmodem.css"]')) {
+	document.querySelector('head').appendChild(E('link', {
+		'rel': 'stylesheet',
+		'type': 'text/css',
+		'href': L.resource('view/hh4xmodem/hh4xmodem.css') + '?_=' + Date.now()
+	}));
+}
+
 const callSendUssd = rpc.declare({
 	object: 'hh4xmodem',
 	method: 'send_ussd',
@@ -27,21 +36,54 @@ const callSendUssd = rpc.declare({
 	reject: true
 });
 
+const callSimStatus = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'get_sim_status'
+});
+
+// USSD is a network service: without a usable SIM the modem never answers
+// SendUSSD, so the request just hangs until the XHR times out. Check up front
+// so the page can say why instead of showing a timeout.
+// SIM state 7 = Ready. Returns a reason string, or null when the SIM is usable.
+function simBlockReason(sim) {
+	var state = (sim && sim.SIMState != null) ? parseInt(sim.SIMState) : null;
+	if (state == 7) return null;
+	if (state == 0) return _('No SIM is inserted. Insert a SIM to use USSD codes.');
+	if (state == 1) return _('The SIM is not ready yet. Wait a moment and try again.');
+	if (state == 2) return _('The SIM is locked. Enter your PIN first, then use USSD codes.');
+	if (state == 3) return _('The SIM is locked. Enter your PUK first, then use USSD codes.');
+	if (state == 4) return _('The SIM is network-locked (NCK required).');
+	if (state == 5) return _('The PUK is blocked.');
+	if (state == 6) return _('The SIM is invalid.');
+	if (state == 11) return _('The SIM is initialising. Wait a moment and try again.');
+	return _('The modem did not report a usable SIM state.');
+}
+
 return view.extend({
 	handleSave: null,
 	handleSaveApply: null,
 	handleReset: null,
 
 	load: function() {
-		return L.resolveDefault(null);
+		// A failed SIM read must not block the page; the backend re-checks
+		// before it actually sends, and the Send button stays enabled so the
+		// user is never stuck with a form that cannot be used.
+		return callSimStatus().catch(function() { return null; });
 	},
 
-	render: function() {
+	render: function(sim) {
+		var blocked = simBlockReason(sim);
+		var fieldStyle = 'width: 100%; direction: ltr; font-family: monospace; font-size: 1.1em;';
+
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [_('USSD Codes')]),
 			E('div', { 'class': 'cbi-map-descr' }, [
 				_('Send USSD codes to your network operator (e.g., balance check, data plans).')
 			]),
+			blocked ? E('div', { 'class': 'hh4x-warning', 'style': 'margin-bottom:1em;' }, [
+				E('span', { 'class': 'hh4x-warning-icon' }, ['⚠']),
+				E('span', {}, [blocked])
+			]) : null,
 			E('hr'),
 			E('div', { 'class': 'cbi-section' }, [
 				E('div', { 'class': 'cbi-section-node' }, [
@@ -52,9 +94,10 @@ return view.extend({
 								'type': 'text',
 								'id': 'ussd-code',
 								'class': 'cbi-input-text',
-								'style': 'width: 100%; direction: ltr; font-family: monospace; font-size: 1.1em;',
+								'style': fieldStyle,
 								'placeholder': '*100#',
 								'autofocus': null,
+								'disabled': blocked ? true : undefined,
 								'keydown': function(ev) {
 									if (ev.keyCode === 13) {
 										var btn = document.getElementById('ussd-send');
@@ -71,6 +114,7 @@ return view.extend({
 								return E('button', {
 									'class': 'btn cbi-button',
 									'style': 'min-width: 2.8em; font-size: 1.2em; text-align: center;',
+									'disabled': blocked ? true : undefined,
 									'click': function() {
 										var inp = document.getElementById('ussd-code');
 										if (inp) {
@@ -90,6 +134,7 @@ return view.extend({
 							E('button', {
 								'id': 'ussd-send',
 								'class': 'cbi-button cbi-button-action important',
+								'disabled': blocked ? true : undefined,
 								'click': function(ev) {
 									ev.preventDefault();
 									var code = document.getElementById('ussd-code');

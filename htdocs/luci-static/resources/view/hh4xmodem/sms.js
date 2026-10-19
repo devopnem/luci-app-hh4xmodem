@@ -23,6 +23,11 @@ const callSMSData = rpc.declare({
 	params: { key: 'inbox', page: 1 }
 });
 
+const callSimStatus = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'get_sim_status'
+});
+
 const callSendSMS = rpc.declare({
 	object: 'hh4xmodem',
 	method: 'send_sms',
@@ -49,6 +54,24 @@ const callDeleteSMSBulk = rpc.declare({
 	params: { ids: [] },
 	reject: true
 });
+
+// Sending needs a usable SIM. Without one the modem's SMS store is
+// unreachable and SendSMS fails with the misleading "Fail with store space
+// full" (060603) rather than "no SIM". Check up front and say the real thing.
+// SIM state 7 = Ready. Returns a reason string, or null when the SIM is usable.
+function simBlockReason(sim) {
+	var state = (sim && sim.SIMState != null) ? parseInt(sim.SIMState) : null;
+	if (state == 7) return null;
+	if (state == 0) return _('No SIM is inserted. Insert a SIM to send messages.');
+	if (state == 1) return _('The SIM is not ready yet. Wait a moment and try again.');
+	if (state == 2) return _('The SIM is locked. Enter your PIN first, then send messages.');
+	if (state == 3) return _('The SIM is locked. Enter your PUK first, then send messages.');
+	if (state == 4) return _('The SIM is network-locked (NCK required).');
+	if (state == 5) return _('The PUK is blocked.');
+	if (state == 6) return _('The SIM is invalid.');
+	if (state == 11) return _('The SIM is initialising. Wait a moment and try again.');
+	return _('The modem did not report a usable SIM state.');
+}
 
 function formatDate(dateStr) {
 	if (!dateStr) return '--';
@@ -204,6 +227,11 @@ function showComposeModal() {
 		'id': 'compose-send-btn',
 		'style': 'width:100%;',
 		'click': function () {
+			let blocked = simBlockReason(currentSim);
+			if (blocked) {
+				ui.addNotification(null, E('p', [blocked]), 'error');
+				return;
+			}
 			let phone = document.getElementById('compose-phone').value.trim();
 			let msg = document.getElementById('compose-msg').value.trim();
 			if (!phone) { ui.addNotification(null, E('p', [_('Enter a phone number.')]), 'info'); return; }
@@ -236,6 +264,7 @@ function showComposeModal() {
 }
 
 let smsViewState = { key: 'inbox', page: 1 };
+let currentSim = null;
 
 let smsTabs = [
 	{ key: 'inbox', label: _('Inbox') },
@@ -248,7 +277,16 @@ return view.extend({
 	handleReset: null,
 
 	load: function () {
-		return callSMSData({ key: smsViewState.key, page: smsViewState.page });
+		// A failed SIM read must not block the list; the backend re-checks
+		// before it actually sends, and Compose stays enabled so the user is
+		// never locked out by a transport hiccup.
+		return Promise.all([
+			callSMSData({ key: smsViewState.key, page: smsViewState.page }),
+			callSimStatus().catch(function () { return null; })
+		]).then(function (res) {
+			currentSim = res[1] || null;
+			return res[0];
+		});
 	},
 
 	render: function (data) {
@@ -286,12 +324,21 @@ return view.extend({
 			])
 		]);
 
+		let simBlocked = simBlockReason(currentSim);
 		let composeBtn = E('button', {
 			'class': 'cbi-button cbi-button-action',
 			'style': 'margin-bottom:16px;',
+			'disabled': simBlocked ? true : undefined,
 			'click': function () { showComposeModal(); }
 		}, [_('Compose')]);
 		body.appendChild(composeBtn);
+
+		if (simBlocked) {
+			body.appendChild(E('div', { 'class': 'hh4x-warning', 'style': 'margin-bottom:16px;' }, [
+				E('span', { 'class': 'hh4x-warning-icon' }, ['⚠']),
+				E('span', {}, [simBlocked])
+			]));
+		}
 
 		let toolbar = E('div', { 'class': 'hh4x-sms-toolbar' }, [
 			E('label', { 'class': 'hh4x-sms-toolbar-label' }, [

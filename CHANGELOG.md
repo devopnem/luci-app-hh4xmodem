@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r2] — 2026-10-19
+
+### Fixed
+- **Signal Quality no longer shows fabricated readings.** Without a usable SIM
+  the modem keeps returning its last measurements plus out-of-range sentinels
+  (RSRP `-1 dBm`). The whole card is now blanked with an explanation instead of
+  drawing live-looking bars, and out-of-3GPP-range values are filtered per metric.
+- **Status page "Roaming" reported the wrong source.** It read
+  `Domestic_Roaming` from `GetConnectionState`, which has no roaming field at
+  all, so it always rendered "No" even while the modem was roaming. It now reads
+  `GetNetworkInfo` and shows "Unknown" when the flag is absent.
+- **Roaming settings are no longer ambiguously labelled.** "Roaming Connect"
+  (connection module), "Allow Domestic Roaming" (network module) and "Roaming
+  (active)" (live state) are three distinct modem settings that were all
+  displayed as "Roaming".
+- **APN profile state is reported honestly.** `getCurrentProfile` returns the
+  literal string `"NULL"` for an unnamed profile, which was printed verbatim as
+  if it were a profile name. Now shown as "Not set (auto)".
+- **USSD no longer hangs without a SIM.** `SendUSSD` never replies when no SIM is
+  present, so the request timed out; both the page and the backend now reject it
+  up front with the real reason.
+- **Sending an SMS without a SIM no longer reports "store space full" (060603).**
+  The modem blames its SMS store; the actual cause is the missing SIM.
+- **USSD page styling.** `ussd.js` never loaded `hh4xmodem.css`, so `.ussd-output`
+  was unstyled.
+
+### Changed
+- `send_ussd` and `send_sms` check SIM state (7 = Ready) before contacting the
+  modem. A failed SIM read deliberately does not block the action, so a transport
+  hiccup cannot stop a legitimate send.
+
+### Known issues
+- The list of APN profiles grows by one entry per network-mode change. This is
+  modem-side behaviour (`core_app` instantiates a carrier profile on each RAT
+  change) and cannot be prevented from LuCI.
+
 ## [1.0.0-r1] — 2026-10-08
 
 First standalone release, extracted from the `devopnem/luci` fork.

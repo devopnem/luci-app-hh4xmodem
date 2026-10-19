@@ -156,6 +156,13 @@
 	word-break: break-all;
 }
 
+/* Value that reports a modem-side failure rather than real state. */
+.hh4x-info-row-warn .hh4x-info-value {
+	color: var(--warn-color-high);
+	font-style: italic;
+	font-weight: 500;
+}
+
 /* ---- Signal Quality ---- */
 .hh4x-signal-grid {
 	display: flex;
