@@ -859,7 +859,6 @@ function renderNetworkTab(ctx) {
 				createInfoRow('Network Search Mode',
 					network.NetselectionMode == null ? '--'
 					: network.NetselectionMode == 0 ? _('Automatic') : _('Manual')),
-				createInfoRow('Network Band', network.NetworkBand == null || network.NetworkBand == 255 ? _('All') : network.NetworkBand),
 				// This is DomesticRoam (SetNetworkSettings), NOT the RoamingConnect
 				// in the Connection Mode card. They are separate modem settings in
 				// separate subsystems, and both were labelled just "Roaming", which
@@ -1263,7 +1262,6 @@ function renderInfoTab(ctx) {
 				createInfoRow(_('WebUI Version'), (sysinfo.WebUiVersion || '').replace(/\n/g, '') || '--'),
 				createInfoRow(_('IMEI'), sysinfo.IMEI || '--'),
 				createInfoRow(_('ICCID'), sysinfo.ICCID || '--'),
-				createInfoRow(_('Band'), sysinfo.band || '--'),
 				createInfoRow(_('Connection Status'), status.ConnectionStatus == 2 ? _('Connected') : _('Disconnected'))
 			]),
 			createCard(_('SIM Card'), [

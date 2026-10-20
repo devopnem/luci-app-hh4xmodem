@@ -70,17 +70,17 @@ and install it on the router:
 
 ```sh
 # OpenWrt 25.12+ (apk)
-apk add --allow-untrusted luci-app-hh4xmodem-1.0.0-r3.apk
+apk add --allow-untrusted luci-app-hh4xmodem-1.0.0-r4.apk
 
 # Older releases (opkg)
-opkg install luci-app-hh4xmodem-1.0.0-r3.apk
+opkg install luci-app-hh4xmodem-1.0.0-r4.apk
 ```
 
 Or fetch it directly over SSH:
 
 ```sh
 wget -O /tmp/hh4xmodem.apk \
-  https://github.com/devopnem/luci-app-hh4xmodem/releases/latest/download/luci-app-hh4xmodem-1.0.0-r3.apk
+  https://github.com/devopnem/luci-app-hh4xmodem/releases/latest/download/luci-app-hh4xmodem-1.0.0-r4.apk
 apk add --allow-untrusted /tmp/hh4xmodem.apk
 ```
 

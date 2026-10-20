@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r4] — 2026-10-20
+
+### Removed
+- **The "Network Band" row on the Network tab and the raw `Band` value on the
+  Info tab.** The modem's `NetworkBand` is a stored "no restriction" sentinel
+  (255), not a list of usable bands, and this OEM firmware refuses band changes
+  (`Band settings not allowed`); `GetSystemInfo.band` is an unmapped internal
+  value. The band actually in use is still shown on the Status tab.
+
 ## [1.0.0-r3] — 2026-10-20
 
 ### Fixed
