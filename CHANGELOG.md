@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-r3] — 2026-10-20
+
+### Fixed
+- **The Network tab mislabelled the modem's operator-search setting as "Band
+  Selection".** `NetselectionMode` selects automatic vs. manual *network (operator)
+  search*; it is not a band setting. The row is now "Network Search Mode", and its
+  polarity matches the modem firmware (`0 = Automatic`, `1 = Manual`) — the previous
+  code had it inverted, so an automatic setting was shown as "Manual".
+
+### Added
+- **Modem hardware identification on the Info tab:** model
+  (Qualcomm MDM9207), platform (`mdm9607`, Qualcomm 9x07 family), CPU
+  (ARM Cortex-A7 / ARMv7l), modem OS (Linux 3.18.20), LTE category (Cat 4,
+  150/50 Mbps) and host interface (USB RNDIS `1bbb:0196`, pack API on TCP 2016).
+
 ## [1.0.0-r2] — 2026-10-19
 
 ### Fixed

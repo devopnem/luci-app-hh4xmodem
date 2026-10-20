@@ -23,7 +23,7 @@ APK="$IB/staging_dir/host/bin/apk"
 
 PKGNAME="luci-app-hh4xmodem"
 # Keep in step with PKG_RELEASE in the Makefile.
-PKGVER="${PKGVER:-1.0.0-r2}"
+PKGVER="${PKGVER:-1.0.0-r3}"
 
 # 1) Build the package root from the source tree (htdocs -> /www, root -> /)
 WORK="$(mktemp -d)"

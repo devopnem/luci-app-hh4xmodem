@@ -851,7 +851,14 @@ function renderNetworkTab(ctx) {
 					E('span', { 'class': 'hh4x-mode-label' }, [currentLabel])
 				]),
 				E('hr', { 'class': 'hh4x-divider' }),
-				createInfoRow('Band Selection', network.NetselectionMode === 1 ? _('Automatic') : _('Manual')),
+				// NetselectionMode is the modem's *network search* mode, not a band
+				// selection: 0 = automatic operator search, 1 = manual operator
+				// selection. Stock WebUI: autoManualOptions = [[0,"ids_auto"],
+				// [1,"ids_manual"]], and its "Search network" button is disabled
+				// while the value is 0.
+				createInfoRow('Network Search Mode',
+					network.NetselectionMode == null ? '--'
+					: network.NetselectionMode == 0 ? _('Automatic') : _('Manual')),
 				createInfoRow('Network Band', network.NetworkBand == null || network.NetworkBand == 255 ? _('All') : network.NetworkBand),
 				// This is DomesticRoam (SetNetworkSettings), NOT the RoamingConnect
 				// in the Connection Mode card. They are separate modem settings in
@@ -1245,6 +1252,12 @@ function renderInfoTab(ctx) {
 		E('div', { 'class': 'hh4x-row hh4x-row-2col' }, [
 			createCard(_('Modem'), [
 				createInfoRow(_('Device Name'), sysinfo.DeviceName),
+				createInfoRow(_('Modem Model'), 'Qualcomm MDM9207'),
+				createInfoRow(_('Modem Platform'), 'mdm9607 (Qualcomm 9x07 family)'),
+				createInfoRow(_('Modem CPU'), 'ARM Cortex-A7 (ARMv7l)'),
+				createInfoRow(_('Modem OS'), 'Linux 3.18.20'),
+				createInfoRow(_('LTE Category'), 'Cat 4 (150 Mbps DL / 50 Mbps UL)'),
+				createInfoRow(_('Host Interface'), 'USB RNDIS (1bbb:0196), pack API TCP 2016'),
 				createInfoRow(_('Hardware Version'), sysinfo.HwVersion),
 				createInfoRow(_('Software Version'), (sysinfo.SwVersion || '').replace(/\n/g, '') || '--'),
 				createInfoRow(_('WebUI Version'), (sysinfo.WebUiVersion || '').replace(/\n/g, '') || '--'),
