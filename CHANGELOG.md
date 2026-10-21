@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-r1] — 2026-10-21
+
+### Added
+- **NAT tab with modem-side UPnP and DMZ controls.** UPnP can be enabled or
+  disabled directly from LuCI, with the new state verified by reading it back
+  from the modem. DMZ can be enabled for one host address and disabled again;
+  the stored host address is preserved when DMZ is turned off. DMZ enables are
+  confirmed and the host address is validated before it is sent, because DMZ
+  forwards all otherwise-unforwarded inbound traffic to that host.
+- The NAT tab is only shown as available when the modem firmware reports the
+  corresponding setting; unsupported settings are labelled "Unavailable"
+  instead of being presented as disabled.
+- The read-only UPnP row was removed from Info -> LAN / Router; UPnP is now
+  managed on the NAT tab.
+
 ## [1.0.0-r4] — 2026-10-20
 
 ### Removed

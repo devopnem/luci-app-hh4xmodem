@@ -5,7 +5,7 @@
 # only scripts and static assets.
 #
 # Usage:  ./build-apk.sh
-#         SRC=/path/to/src IB=/path/to/imagebuilder PKGVER=1.0.0-r4 ./build-apk.sh
+#         SRC=/path/to/src IB=/path/to/imagebuilder PKGVER=1.1.0-r1 ./build-apk.sh
 #
 # Notes for anyone editing this script:
 #  * The output filename must be <name>-<version>.apk -- no arch, no underscore
@@ -23,7 +23,7 @@ APK="$IB/staging_dir/host/bin/apk"
 
 PKGNAME="luci-app-hh4xmodem"
 # Keep in step with PKG_RELEASE in the Makefile.
-PKGVER="${PKGVER:-1.0.0-r4}"
+PKGVER="${PKGVER:-1.1.0-r1}"
 
 # 1) Build the package root from the source tree (htdocs -> /www, root -> /)
 WORK="$(mktemp -d)"

@@ -25,12 +25,13 @@ from LuCI, over the modem's local HTTP API. No cloud, no external services.
 
 <div align="center"><sub>Live signal quality (RSRP / RSSI / RSRQ / SINR), band, cell identity and connection state.</sub></div>
 
-The dashboard has four tabs:
+The dashboard has five tabs:
 
 | Tab | What it shows |
 | --- | --- |
 | **Status** | Connect/disconnect, network type, operator, IP, up/down speed, uptime, signal bars, band, cell ID, eNB ID, PLMN, MCC/MNC |
 | **Network** | Preferred network mode selection, band selection, APN profiles, connection mode |
+| **NAT** | Modem-side UPnP enable/disable and DMZ host enable/disable |
 | **Data Usage** | Session totals and upload/download counters, with the ability to reset them |
 | **Info** | Firmware, IMEI, model, SIM state (including PIN/PUK unlock) and modem utilities |
 
@@ -41,6 +42,7 @@ The dashboard has four tabs:
 - **Connection control** — connect and disconnect the data session, start/stop auto-connect.
 - **Signal monitoring** — RSRP, RSSI, RSRQ and SINR with colour-graded bars, plus signal level, band, cell ID, eNB ID, PLMN and MCC/MNC.
 - **Network mode selection** — 2G only, 3G only, 2G/3G auto, LTE only, 2G/3G auto with 4G fallback, 3G/4G auto, or full auto (recommended).
+- **NAT controls** — enable or disable the modem's own UPnP and DMZ host, with read-back verification and a warning before DMZ is turned on.
 - **Data usage tracking** — upload and download counters with configurable reset periods, resettable from the UI.
 - **SMS** — read inbox, sent, drafts and outbox, read individual messages, send new ones, delete single or bulk.
 - **USSD** — run USSD codes such as balance and data-remaining checks, with proper session handling.
@@ -70,17 +72,17 @@ and install it on the router:
 
 ```sh
 # OpenWrt 25.12+ (apk)
-apk add --allow-untrusted luci-app-hh4xmodem-1.0.0-r4.apk
+apk add --allow-untrusted luci-app-hh4xmodem-1.1.0-r1.apk
 
 # Older releases (opkg)
-opkg install luci-app-hh4xmodem-1.0.0-r4.apk
+opkg install luci-app-hh4xmodem-1.1.0-r1.apk
 ```
 
 Or fetch it directly over SSH:
 
 ```sh
 wget -O /tmp/hh4xmodem.apk \
-  https://github.com/devopnem/luci-app-hh4xmodem/releases/latest/download/luci-app-hh4xmodem-1.0.0-r4.apk
+  https://github.com/devopnem/luci-app-hh4xmodem/releases/latest/download/luci-app-hh4xmodem-1.1.0-r1.apk
 apk add --allow-untrusted /tmp/hh4xmodem.apk
 ```
 
