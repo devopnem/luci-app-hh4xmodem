@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-r2] — 2026-11-07
+
+### Fixed
+- **SMS Compose and USSD no longer blocked when the SIM read fails.** `sms.js`
+  and `ussd.js` treated an unknown SIM state (`null`, e.g. a transient RPC
+  failure) as "did not report a usable SIM state" and disabled Compose / the
+  USSD input, keypad and Send button, contradicting the `load()` contract that
+  a failed SIM read must not block sending (the backend re-checks before
+  sending). An unknown state is now treated as usable; only known blocked
+  states (no SIM, locked, blocked, invalid, initialising) still block the UI.
+
+### Removed
+- **Donation QR image (`docs/donate-qr.png`) and "Donate via RedotPay" badge**
+  from the README, plus the sponsor badge. USDT/TRC20 address text is kept.
+
 ## [1.1.0-r1] — 2026-10-21
 
 ### Added
