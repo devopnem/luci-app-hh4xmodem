@@ -1,0 +1,80 @@
+name: Build and Release OpenWrt APK
+
+on:
+  push:
+    branches:
+      - '**'
+    paths-ignore:
+      - 'README.md'
+      - '.github/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout luci-app-hh4xmodem
+        uses: actions/checkout@v4
+        with:
+          path: luci-app-hh4xmodem
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-distutils rsync unzip zlib1g-dev file wget zstd
+
+      - name: Download and extract OpenWrt SDK (Snapshot with APK support)
+        run: |
+          SDK_BASE_URL="https://downloads.openwrt.org/snapshots/targets/x86/64"
+          SDK_FILE=$(wget -qO- "$SDK_BASE_URL/" | grep -oE 'openwrt-sdk-x86-64_gcc-[^"]+\.tar\.zst' | head -n1)
+          echo "Downloading $SDK_FILE..."
+          wget -q "$SDK_BASE_URL/$SDK_FILE" -O sdk.tar.zst
+          mkdir -p openwrt-sdk
+          tar --zstd -xf sdk.tar.zst -C openwrt-sdk --strip-components=1
+          rm sdk.tar.zst
+
+      - name: Configure feeds and link package
+        working-directory: openwrt-sdk
+        run: |
+          cp feeds.conf.default feeds.conf
+          echo "src-link custom $GITHUB_WORKSPACE/luci-app-hh4xmodem" >> feeds.conf
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Build luci-app-hh4xmodem APK
+        working-directory: openwrt-sdk
+        run: |
+          make defconfig
+          make package/luci-app-hh4xmodem/compile V=s
+
+      - name: Collect built APK files
+        run: |
+          mkdir -p release-artifacts
+          find openwrt-sdk/bin/packages/ -name "luci-app-hh4xmodem*.apk" -exec cp {} release-artifacts/ \;
+          ls -lh release-artifacts/
+
+      - name: Remove old APK assets from 'latest' release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for asset in $(gh release view latest --json assets -q '.assets[].name'); do
+            gh release delete-asset latest "$asset" --yes
+          done
+
+      - name: Publish APK to 'latest' GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build (${{ github.sha }})
+          body: |
+            Automated build from commit `${{ github.sha }}` on branch `${{ github.ref_name }}`.
+            Commit message: ${{ github.event.head_commit.message }}
+          files: release-artifacts/*.apk
+          prerelease: true
