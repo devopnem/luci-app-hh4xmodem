@@ -53,13 +53,15 @@ jobs:
           if [ -n "$APP_DIR" ] && [ -f "$APP_DIR/Makefile" ]; then
             APP_PATH="$APP_DIR"
           else
-            MK=$(grep -rlE '^include .*luci\.mk' --include=Makefile --exclude-dir=.git --exclude-dir="$OUTPUT_DIR" . | head -n 1 || true)
+            # An OpenWrt package Makefile includes rules.mk (or luci.mk, which includes it)
+            MK=$(grep -rlE '^[[:space:]]*-?include[[:space:]].*(rules|luci)\.mk' --include=Makefile --exclude-dir=.git --exclude-dir="$OUTPUT_DIR" . | head -n 1 || true)
             if [ -z "$MK" ]; then
-              echo "::error::No LuCI app Makefile (one that includes luci.mk) found in this repo"
+              echo "::error::No OpenWrt package Makefile (one that includes rules.mk or luci.mk) found in this repo"
               echo "Makefiles in the repo:"
               find . -name Makefile -not -path './.git/*'
-              echo "Top-level contents:"
-              ls -la
+              for f in Makefile build-apk.sh; do
+                [ -f "$f" ] && { echo "=================== $f ==================="; cat "$f"; }
+              done
               exit 1
             fi
             APP_PATH=$(dirname "$MK")
@@ -118,10 +120,15 @@ jobs:
 
           # Give the package a real version. luci.mk would otherwise derive one from the
           # git state of the luci feed, which has nothing to do with this repo.
+          # (Skipped when the Makefile sets PKG_VERSION itself or does not use luci.mk.)
           MK="$DEST/Makefile"
-          if ! grep -q '^PKG_VERSION' "$MK"; then
-            sed -i "s|^include \.\./\.\./luci\.mk|PKG_VERSION:=${PKG_VERSION}\nPKG_RELEASE:=1\n\n&|" "$MK"
+          if grep -q '^PKG_VERSION' "$MK"; then
+            echo "Makefile sets PKG_VERSION itself - leaving it alone"
+          elif grep -qE '^include .*luci\.mk' "$MK"; then
+            sed -i -E "s|^(include .*luci\.mk)|PKG_VERSION:=${PKG_VERSION}\nPKG_RELEASE:=1\n\n\1|" "$MK"
             grep -q "^PKG_VERSION:=${PKG_VERSION}" "$MK" || { echo "::error::Could not set PKG_VERSION in $MK"; exit 1; }
+          else
+            echo "::warning::Makefile neither sets PKG_VERSION nor includes luci.mk - building with its own version"
           fi
 
           ./scripts/feeds update -i luci      # re-index so the new package is known
