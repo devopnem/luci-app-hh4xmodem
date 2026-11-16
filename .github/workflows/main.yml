@@ -99,6 +99,11 @@ jobs:
           curl -fSL "$BASE_URL/$SDK_FILE" -o "$SDK_FILE"
           grep -F "$SDK_FILE" sha256sums | sha256sum -c -
 
+          # Exact feed commits the release was built from (keeps dependency sources
+          # identical to what OpenWrt's source mirror has).
+          curl -fsSL "$BASE_URL/feeds.buildinfo" -o feeds.buildinfo
+          echo "Pinned feeds:"; cat feeds.buildinfo
+
           mkdir sdk
           tar -I zstd -xf "$SDK_FILE" -C sdk --strip-components=1
           rm -f "$SDK_FILE"
@@ -108,6 +113,7 @@ jobs:
         working-directory: ${{ env.SDK_DIR }}
         run: |
           set -e
+          cp "$RUNNER_TEMP/feeds.buildinfo" feeds.conf
           ./scripts/feeds update packages luci
 
           # The app's Makefile has "include ../../luci.mk", which only resolves when the
