@@ -139,8 +139,14 @@ jobs:
             echo "::warning::Makefile neither sets PKG_VERSION nor includes luci.mk - building with its own version"
           fi
 
-          ./scripts/feeds update -i luci      # re-index so the new package is known
-          ./scripts/feeds install "$CI_PKG_NAME" # also installs its dependencies (luci-base, ...)
+          ./scripts/feeds update -i luci   # re-index so the new package is known
+
+          # Link the whole luci and packages feeds into the build tree. Installing only the
+          # app is not enough: some of LuCI's dependencies (e.g. lucihttp) need other packages
+          # at build time (lua headers), and those must be present for the SDK to build them.
+          ./scripts/feeds install -a -p luci
+          ./scripts/feeds install -a -p packages
+          ./scripts/feeds install "$CI_PKG_NAME"
 
       - name: Build apk
         working-directory: ${{ env.CI_SDK_DIR }}
