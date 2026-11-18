@@ -1,0 +1,54 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Stage package feed
+        run: |
+          mkdir -p _feed/luci-app-hh4xmodem
+          if [ -f Makefile ]; then
+            cp -a Makefile htdocs root _feed/luci-app-hh4xmodem/
+          else
+            cp -a luci-app-hh4xmodem/. _feed/luci-app-hh4xmodem/
+          fi
+          sed -i 's|include \.\./\.\./luci\.mk|include $(TOPDIR)/feeds/luci/luci.mk|' _feed/luci-app-hh4xmodem/Makefile
+          chmod +x _feed/luci-app-hh4xmodem/root/etc/init.d/* \
+                   _feed/luci-app-hh4xmodem/root/etc/uci-defaults/* \
+                   _feed/luci-app-hh4xmodem/root/usr/bin/* 2>/dev/null || true
+
+      - name: Build OpenWrt APK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          CONTAINER: ghcr.io/openwrt/sdk
+          ARCH: x86_64-SNAPSHOT
+          FEED_DIR: ${{ github.workspace }}/_feed
+          FEEDNAME: hh4xmodem
+          PACKAGES: luci-app-hh4xmodem
+          NO_SHFMT_CHECK: 1
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          find bin/packages -type f -name 'luci-app-hh4xmodem*.apk' -exec cp -v {} dist/ \;
+          ls -lh dist/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Latest Build' }}
+          make_latest: true
+          files: dist/*.apk
