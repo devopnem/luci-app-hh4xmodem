@@ -62,6 +62,23 @@ const callReboot = rpc.declare({
 	reject: true
 });
 
+const callGetNvImei = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'get_nv_imei'
+});
+
+const callBackupNvPartitions = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'backup_nv_partitions'
+});
+
+const callRestoreNv = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'restore_nv_backup',
+	params: { imei: '' },
+	reject: true
+});
+
 const callUnlockSim = rpc.declare({
 	object: 'hh4xmodem',
 	method: 'unlock_sim',
@@ -506,19 +523,192 @@ function updateInfoValue(row, value) {
 	if (valEl) valEl.textContent = value != null ? String(value) : '--';
 }
 
+
+// ---- Live Signal Sparkline (Router Placement Helper) ----
+var SPARKLINE_MAX_SAMPLES = 40;
+var signalHistory = { primary: [], quality: [], primaryMeta: null, qualityMeta: null };
+
+function sparklineColorVar(value, type) {
+	var cls = signalQualityClass(value, type);
+	if (cls === 'signal-excellent' || cls === 'signal-good') return 'var(--success-color-high, #2e7d32)';
+	if (cls === 'signal-fair') return 'var(--warn-color-high, #ed6c02)';
+	if (cls === 'signal-poor') return 'var(--error-color-high, #d32f2f)';
+	return 'var(--text-color-medium, #666)';
+}
+
+function buildSparklineSvg(values, meta) {
+	var W = 220, H = 48, pad = 4;
+	if (!values.length) {
+		return '<svg class="hh4x-spark-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+			'<line x1="0" y1="' + (H / 2) + '" x2="' + W + '" y2="' + (H / 2) + '" stroke="var(--border-color-medium, #888)" stroke-dasharray="3,3" stroke-width="1" opacity="0.5"/>' +
+			'</svg>';
+	}
+	var lo = meta.min, hi = meta.max;
+	var dataMin = Math.min.apply(null, values);
+	var dataMax = Math.max.apply(null, values);
+	var span = Math.max(10, (dataMax - dataMin) * 1.4);
+	var mid = (dataMin + dataMax) / 2;
+	var yMin = Math.max(lo, mid - span / 2);
+	var yMax = Math.min(hi, mid + span / 2);
+	if (yMax - yMin < 4) { yMin = lo; yMax = hi; }
+
+	var pts = [];
+	var step = values.length > 1 ? (W - pad * 2) / (SPARKLINE_MAX_SAMPLES - 1) : 0;
+	var xOffset = (SPARKLINE_MAX_SAMPLES - values.length) * step;
+	for (var i = 0; i < values.length; i++) {
+		var x = values.length === 1 ? (W - pad) : (pad + xOffset + i * step);
+		var norm = (values[i] - yMin) / (yMax - yMin);
+		norm = Math.max(0, Math.min(1, norm));
+		var y = (H - pad) - norm * (H - pad * 2);
+		pts.push([x.toFixed(1), y.toFixed(1)]);
+	}
+	var latest = values[values.length - 1];
+	var stroke = sparklineColorVar(latest, meta.type);
+	var polyPoints = pts.map(function (pt) { return pt[0] + ',' + pt[1]; }).join(' ');
+	var lastPt = pts[pts.length - 1];
+	var areaHtml = '';
+	if (pts.length > 1) {
+		var firstPt = pts[0];
+		var areaPts = firstPt[0] + ',' + (H - pad) + ' ' + polyPoints + ' ' + lastPt[0] + ',' + (H - pad);
+		areaHtml = '<polygon points="' + areaPts + '" fill="' + stroke + '" fill-opacity="0.14"/>' +
+			'<polyline points="' + polyPoints + '" fill="none" stroke="' + stroke + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+	}
+	return '<svg class="hh4x-spark-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+		areaHtml +
+		'<circle cx="' + lastPt[0] + '" cy="' + lastPt[1] + '" r="3.2" fill="' + stroke + '"/>' +
+		'</svg>';
+}
+
+function recordSignalSample(signal) {
+	var metrics = getSignalMetrics(signal);
+	var pMeta = metrics[0];
+	var qMeta = metrics[3] || metrics[2];
+	var pVal = signalMetricValue(signal, pMeta);
+	var qVal = signalMetricValue(signal, qMeta);
+
+	if (signalHistory.primaryMeta && signalHistory.primaryMeta.field !== pMeta.field) {
+		signalHistory.primary = [];
+		signalHistory.quality = [];
+	}
+	signalHistory.primaryMeta = pMeta;
+	signalHistory.qualityMeta = qMeta;
+
+	if (pVal != null) {
+		signalHistory.primary.push(pVal);
+		if (signalHistory.primary.length > SPARKLINE_MAX_SAMPLES) signalHistory.primary.shift();
+	}
+	if (qVal != null) {
+		signalHistory.quality.push(qVal);
+		if (signalHistory.quality.length > SPARKLINE_MAX_SAMPLES) signalHistory.quality.shift();
+	}
+}
+
+function updateSparklineDom() {
+	var wrap = document.getElementById('hh4x-sparkline-panel');
+	if (!wrap) return;
+
+	var count = Math.max(signalHistory.primary.length, signalHistory.quality.length);
+	var cntEl = wrap.querySelector('.hh4x-spark-count');
+	if (cntEl) cntEl.textContent = count + '/' + SPARKLINE_MAX_SAMPLES;
+
+	var slots = [
+		{ id: 'hh4x-spark-primary', values: signalHistory.primary, meta: signalHistory.primaryMeta },
+		{ id: 'hh4x-spark-quality', values: signalHistory.quality, meta: signalHistory.qualityMeta }
+	];
+
+	slots.forEach(function (slot) {
+		var box = document.getElementById(slot.id);
+		if (!box || !slot.meta) return;
+		var vals = slot.values;
+		var lbl = box.querySelector('.hh4x-spark-label');
+		var cur = box.querySelector('.hh4x-spark-cur');
+		var range = box.querySelector('.hh4x-spark-range');
+		var canvas = box.querySelector('.hh4x-spark-canvas');
+		if (lbl) lbl.textContent = slot.meta.label;
+		if (vals.length) {
+			var latest = vals[vals.length - 1];
+			var lo = Math.min.apply(null, vals);
+			var hi = Math.max.apply(null, vals);
+			if (cur) {
+				cur.textContent = latest + ' ' + slot.meta.unit;
+				cur.className = 'hh4x-spark-cur ' + signalQualityClass(latest, slot.meta.type);
+			}
+			if (range) range.textContent = _('Min ') + lo + ' / ' + _('Max ') + hi;
+		} else {
+			if (cur) { cur.textContent = '--'; cur.className = 'hh4x-spark-cur'; }
+			if (range) range.textContent = _('Waiting for samples...');
+		}
+		if (canvas) canvas.innerHTML = buildSparklineSvg(vals, slot.meta);
+	});
+}
+
+function createSparklinePanel(signal, radioOk) {
+	if (radioOk) recordSignalSample(signal);
+	else {
+		var metrics = getSignalMetrics(signal);
+		signalHistory.primaryMeta = metrics[0];
+		signalHistory.qualityMeta = metrics[3] || metrics[2];
+	}
+
+	var makeBox = function (id, meta, values) {
+		var latest = values.length ? values[values.length - 1] : null;
+		var rangeTxt = values.length
+			? (_('Min ') + Math.min.apply(null, values) + ' / ' + _('Max ') + Math.max.apply(null, values))
+			: _('Waiting for samples...');
+		var canvas = E('div', { 'class': 'hh4x-spark-canvas' });
+		canvas.innerHTML = buildSparklineSvg(values, meta);
+		return E('div', { 'class': 'hh4x-spark-box', 'id': id }, [
+			E('div', { 'class': 'hh4x-spark-top' }, [
+				E('span', { 'class': 'hh4x-spark-label' }, [meta.label]),
+				E('span', { 'class': 'hh4x-spark-cur ' + (latest != null ? signalQualityClass(latest, meta.type) : '') }, [
+					latest != null ? (latest + ' ' + meta.unit) : '--'
+				])
+			]),
+			canvas,
+			E('div', { 'class': 'hh4x-spark-range' }, [rangeTxt])
+		]);
+	};
+
+	var count = Math.max(signalHistory.primary.length, signalHistory.quality.length);
+	return E('div', { 'class': 'hh4x-spark-panel', 'id': 'hh4x-sparkline-panel' }, [
+		E('div', { 'class': 'hh4x-spark-header' }, [
+			E('span', { 'class': 'hh4x-spark-title' }, [
+				_('Live Signal Trend'),
+				' ',
+				E('span', { 'class': 'hh4x-spark-count' }, [count + '/' + SPARKLINE_MAX_SAMPLES])
+			]),
+			E('button', {
+				'class': 'cbi-button cbi-button-neutral hh4x-spark-reset',
+				'click': function (e) {
+					e.preventDefault();
+					signalHistory.primary = [];
+					signalHistory.quality = [];
+					updateSparklineDom();
+				}
+			}, [_('Reset')])
+		]),
+		E('div', { 'class': 'hh4x-spark-grid' }, [
+			makeBox('hh4x-spark-primary', signalHistory.primaryMeta, signalHistory.primary),
+			makeBox('hh4x-spark-quality', signalHistory.qualityMeta, signalHistory.quality)
+		])
+	]);
+}
+
 function startPolling(interval) {
 	poll.add(function() {
 		return callAll().then(function(d) {
 			var signal = d.GetNetworkInfo || {};
 			var conn = d.GetConnectionState || {};
+			var sim = d.GetSimStatus || {};
+			var radioOk = (sim.SIMState == null || parseInt(sim.SIMState) === 7);
 			var grid = document.querySelector('.hh4x-signal-grid');
 			if (!grid) return;
 			var rows = Array.from(grid.children);
 			var metrics = getSignalMetrics(signal);
 			for (var i = 0; i < Math.min(rows.length, metrics.length); i++) {
 				var m = metrics[i];
-				var val = signal[m.field];
-				var isValid = val != null && parseFloat(val) !== 0;
+				var val = radioOk ? signalMetricValue(signal, m) : null;
+				var isValid = val != null;
 				var row = rows[i];
 				if (isValid && row.classList.contains('hh4x-signal-row')) {
 					updateSignalValue(row.querySelector('.hh4x-signal-value'), val, ' ' + m.unit, m.type);
@@ -532,6 +722,10 @@ function startPolling(interval) {
 					var bEl = row.querySelector('.hh4x-signal-bar');
 					if (bEl) { bEl.style.width = '0%'; bEl.className = 'hh4x-signal-bar signal-unknown'; }
 				}
+			}
+			if (radioOk) {
+				recordSignalSample(signal);
+				updateSparklineDom();
 			}
 			var body = grid.closest('.hh4x-card-body') || grid.parentNode;
 			if (body) {
@@ -857,6 +1051,7 @@ function renderStatusTab(ctx) {
 						return createInfoRow(m.label, '--');
 					return createSignalIndicator(m.label, val, m.unit, m.type);
 				})));
+				items.push(createSparklinePanel(signal, radioOk));
 				items.push(E('hr', { 'class': 'hh4x-divider' }));
 				items.push(createInfoRow('Signal Level',
 					radioOk && signal.SignalStrength != null ? signal.SignalStrength + '/5' : '--'));
@@ -1716,6 +1911,45 @@ function renderInfoTab(ctx) {
 				createInfoRow(_('DNS'), lan.IPv4IPAddress || '--'),
 				E('hr', { 'class': 'hh4x-divider' }),
 				createInfoRow(_('UI Language'), lang.Language || '--')
+			])
+		]),
+		E('div', { 'class': 'hh4x-row' }, [
+			createCard(_('NV Memory Recovery & Backup'), [
+				E('p', { 'class': 'cbi-value-description' }, [
+					_('Qualcomm NV item 550 holds the modem IMEI. The IMEI page reads the live value, saves a backup, and restores it through the modem NV update path.')
+				]),
+				createInfoRow(_('NV 550 IMEI'), (sysinfo && sysinfo.IMEI) ? sysinfo.IMEI : '--'),
+				E('br'),
+				E('div', { 'style': 'display:flex; gap:8px; flex-wrap:wrap;' }, [
+					E('a', {
+						'class': 'cbi-button cbi-button-action',
+						'href': L.url('admin', 'hh4xmodem', 'imei')
+					}, [_('Manage IMEI\u2026')]),
+					E('button', {
+						'class': 'cbi-button cbi-button-neutral',
+						'click': function(e) {
+							e.preventDefault();
+							callGetNvImei().then(function(r) {
+								if (r && r.imei) {
+									var backup = {
+										model: 'HH41V',
+										timestamp: new Date().toISOString(),
+										nv_item_550: r.imei
+									};
+									var blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+									var a = document.createElement('a');
+									a.href = URL.createObjectURL(blob);
+									a.download = 'HH41V_NV550_Backup_' + r.imei + '.json';
+									a.click();
+								} else {
+									ui.addNotification(null, E('p', [_('Failed to read NV item 550: ') + ((r && r.error) ? r.error : _('Unknown error'))]), 'error');
+								}
+							}).catch(function(err) {
+								ui.addNotification(null, E('p', [_('RPC Error: ') + String(err)]), 'error');
+							});
+						}
+					}, [_('Download NV Backup')])
+				])
 			])
 		]),
 		E('div', { 'class': 'hh4x-row' }, [

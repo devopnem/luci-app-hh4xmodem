@@ -1,0 +1,441 @@
+#!/usr/bin/ucode
+'use strict';
+/*
+ * hh4xmodem-nv - IMEI / NV 550 maintenance for the MDM9207 in HH40V/HH41V
+ * Copyright (C) 2026 HH4xModem
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * How the write works
+ * -------------------
+ * The modem's core_app owns the only working NV write path: at startup it
+ * walks /jrd-resource/resource/jrdcfg/efs and pushes every file it finds to
+ * the Q6 over QMI (op 0x19).  When /jrd-resource/resource/jrdcfg/efs/nv_update
+ * exists it then sends op 0x1b, which commits the new values to EFS2.
+ *
+ * The DIAG NV_WRITE command (0x27) is accepted by this firmware but is never
+ * committed, so it is not used here.  The walk only runs during core_app
+ * startup, therefore a change is staged on the modem and applied by a reboot:
+ *
+ *   1. write the 9-byte NV 550 payload to efs/nvm/num/550
+ *   2. create force_mode, an empty update_backup.bin and nv_update
+ *   3. drop reset_flag so core_app does not abort the restore
+ *   4. reboot the modem
+ *
+ * The router is powered from the same board and restarts a few seconds after
+ * the modem, so the operation is split in two halves: `restore` stages and
+ * schedules the reboot, and `status` verifies and cleans up once the router and
+ * modem are back.  The pending state lives in /etc/hh4xmodem/.
+ */
+
+import { popen, stat, open } from 'fs';
+
+const AT_PORT       = getenv('AT_PORT') || '/dev/ttyUSB2';
+const SMS_TOOL      = '/usr/bin/sms_tool';
+const DIAG_HELPER   = getenv('DIAG_HELPER') || '/usr/bin/hh4xmodem-diag';
+const MODEM_IP      = getenv('MODEM_IP') || '192.168.225.1';
+const MODEM_PASS    = getenv('MODEM_PASS') || 'oelinux123';
+
+const STATE_DIR     = '/etc/hh4xmodem';
+const STATE_FILE    = STATE_DIR + '/imei_change.json';
+const BACKUP_DIR    = '/etc/hh4xmodem';
+const PART_SIZE     = 2359296; /* 2.25 MB - 9 erase blocks of 256 KB */
+
+/* Paths inside the modem */
+const NV_DIR        = '/jrd-resource/resource/jrdcfg/efs/nvm/num';
+const NV_FILE       = NV_DIR + '/550';
+const EFS_DIR       = '/jrd-resource/resource/jrdcfg/efs';
+const NV_UPDATE     = EFS_DIR + '/nv_update';
+const FORCE_MODE    = '/jrd-resource/resource/force_mode';
+const UPDATE_BACKUP = '/cache/backup_conf/update_backup.bin';
+const RESET_FLAG    = '/cache/backup_conf/reset_flag';
+
+/* How many readable IMEI reads after boot may disagree with the target
+ * before the change is declared failed.  The modem answers AT+GSN slightly
+ * before core_app finishes the NV restore, so a single early mismatch is
+ * expected and must not fail the operation. */
+const MAX_CHECKS    = 6;
+
+/* ---------------------------------------------------------------- helpers */
+
+function shq(s) {
+	return "'" + replace(s == null ? '' : s, "'", "'\\''") + "'";
+}
+
+function run(cmd) {
+	let fd = popen(cmd);
+	if (!fd) return '';
+	let out = '';
+	let line;
+	while ((line = fd.read('line')) != null) out += line + '\n';
+	fd.close();
+	return trim(out);
+}
+
+/* busybox printf needs an explicit octal escape for binary data */
+function oct_escape(bytes) {
+	let out = '';
+	for (let b in bytes) {
+		let v = b & 0xff;
+		out += sprintf('\\%d%d%d', int(v / 64) % 8, int(v / 8) % 8, v % 8);
+	}
+	return out;
+}
+
+function hex_of(bytes) {
+	let out = [];
+	for (let b in bytes) push(out, sprintf('%02x', b & 0xff));
+	return join(' ', out);
+}
+
+function hexdigit(c) {
+	let v = index('0123456789abcdef', c);
+	if (v < 0) v = index('0123456789abcdef', chr(ord(c) + 32));
+	return v;
+}
+
+/* Turn " 08 3a 95 ..." (od -An -tx1) into a byte array */
+function parse_hex(s) {
+	let out = [], cur = '';
+	for (let i = 0; i < length(s); i++) {
+		let c = substr(s, i, 1);
+		let v = hexdigit(c);
+		if (v < 0) { cur = ''; continue; }
+		cur += c;
+		if (length(cur) == 2) {
+			push(out, hexdigit(substr(cur, 0, 1)) * 16 + hexdigit(substr(cur, 1, 1)));
+			cur = '';
+		}
+	}
+	return out;
+}
+
+function same_bytes(a, b) {
+	if (length(a) != length(b)) return false;
+	for (let i = 0; i < length(a); i++)
+		if ((a[i] & 0xff) != (b[i] & 0xff)) return false;
+	return true;
+}
+
+/* --------------------------------------------------------- NV 550 codec */
+
+function validate_luhn(imei) {
+	if (!match(imei, /^[0-9]{15}$/)) return false;
+	let sum = 0;
+	for (let i = 0; i < 14; i++) {
+		let d = int(substr(imei, 13 - i, 1));
+		if (i % 2 == 0) {
+			d *= 2;
+			if (d > 9) d -= 9;
+		}
+		sum += d;
+	}
+	let check = (10 - (sum % 10)) % 10;
+	return check == int(substr(imei, 14, 1));
+}
+
+function encode_nv550(imei) {
+	let nibbles = [0x0A];
+	for (let i = 0; i < 15; i++)
+		push(nibbles, int(substr(imei, i, 1)));
+
+	let bcd = [];
+	for (let i = 0; i < length(nibbles); i += 2)
+		push(bcd, (nibbles[i + 1] << 4) | nibbles[i]);
+
+	let out = [0x08];
+	for (let b in bcd) push(out, b);
+	return out;
+}
+
+function decode_nv550(payload) {
+	if (length(payload) < 9 || payload[0] != 0x08) return null;
+	let nibbles = [];
+	for (let i = 1; i <= 8; i++) {
+		push(nibbles, payload[i] & 0x0F);
+		push(nibbles, (payload[i] >> 4) & 0x0F);
+	}
+	if (nibbles[0] != 0x0A) return null;
+	let imei = '';
+	for (let i = 1; i <= 15; i++)
+		imei += sprintf('%d', nibbles[i]);
+	return imei;
+}
+
+/* ------------------------------------------------------- modem plumbing */
+
+function ensure_usb_serial() {
+	if (stat(AT_PORT)) return;
+	system('echo "1bbb 0196" > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || ' +
+	       'echo "1bbb 0196" > /sys/bus/usb-serial/drivers/option/new_id 2>/dev/null');
+	sleep(500);
+}
+
+function at_cmd(cmd) {
+	ensure_usb_serial();
+	if (!stat(SMS_TOOL)) return '';
+
+	let fd = popen(sprintf('%s -d %s at %s 2>/dev/null', SMS_TOOL, shq(AT_PORT), shq(cmd)));
+	if (!fd) return '';
+	let out = '';
+	let line;
+	while ((line = fd.read('line')) != null) out += trim(line) + '\n';
+	fd.close();
+	return trim(out);
+}
+
+function read_live_imei() {
+	if (stat(AT_PORT) == null) ensure_usb_serial();
+	let out = at_cmd('AT+GSN');
+	for (let line in split(out, '\n')) {
+		line = trim(line);
+		if (match(line, /^[0-9]{15}$/))
+			return { ok: true, imei: line };
+	}
+	return { ok: false, error: 'The modem did not answer AT+GSN', raw: out };
+}
+
+function modem_exec(remote) {
+	return run(sprintf('DROPBEAR_PASSWORD=%s dbclient -y -o StrictHostKeyChecking=no root@%s %s 2>&1',
+		shq(MODEM_PASS), MODEM_IP, shq(remote)));
+}
+
+function modem_copy_from(remote_path, local_path) {
+	return system(sprintf('DROPBEAR_PASSWORD=%s dbclient -y -o StrictHostKeyChecking=no root@%s "cat %s" > %s 2>/dev/null',
+		shq(MODEM_PASS), MODEM_IP, remote_path, shq(local_path))) == 0;
+}
+
+/* Reboot the modem from a detached process so the RPC reply is already on its
+ * way to the browser when the USB link and then the router go down. */
+function modem_reboot_later(delay) {
+	system(sprintf('(sleep %d; DROPBEAR_PASSWORD=%s dbclient -y -o StrictHostKeyChecking=no root@%s reboot >/dev/null 2>&1) >/dev/null 2>&1 &',
+		delay, shq(MODEM_PASS), MODEM_IP));
+}
+
+/* --------------------------------------------------------------- state */
+
+function state_read() {
+	if (!stat(STATE_FILE)) return null;
+	let fd = open(STATE_FILE, 'r');
+	if (!fd) return null;
+	let txt = '';
+	let chunk;
+	while ((chunk = fd.read(4096)) != null && length(chunk)) txt += chunk;
+	fd.close();
+	txt = trim(txt);
+	if (!length(txt)) return null;
+	let obj = null;
+	try { obj = json(txt); } catch (e) { obj = null; }
+	return type(obj) == 'object' ? obj : null;
+}
+
+function state_write(obj) {
+	system('mkdir -p ' + shq(STATE_DIR));
+	let fd = open(STATE_FILE, 'w');
+	if (!fd) return false;
+	fd.write(sprintf('%J\n', obj));
+	fd.close();
+	system('sync');
+	return true;
+}
+
+function cleanup_staging() {
+	/* Only remove what this tool created: the staged NV item, the trigger
+	 * flags, and an empty update_backup.bin.  Never rm -rf the efs tree -
+	 * the OEM firmware may keep other NV items there. */
+	modem_exec(sprintf(
+		'rm -f %s %s %s; ' +
+		'if [ -f %s ] && [ ! -s %s ]; then rm -f %s; fi; ' +
+		'sync; echo CLEAN_OK',
+		shq(NV_FILE), shq(FORCE_MODE), shq(NV_UPDATE),
+		shq(UPDATE_BACKUP), shq(UPDATE_BACKUP), shq(UPDATE_BACKUP)));
+}
+
+/* ------------------------------------------------------------ commands */
+
+function imei_status() {
+	let st = state_read();
+	let live = read_live_imei();
+
+	if (st != null && st.phase == 'staged') {
+		if (live.ok) {
+			st.checks = int(st.checks ?? 0) + 1;
+			if (live.imei == st.target) {
+				st.phase = 'verified';
+				st.imei = live.imei;
+				st.finished = time();
+				state_write(st);
+				cleanup_staging();
+			} else if (st.checks >= MAX_CHECKS) {
+				st.phase = 'not-applied';
+				st.imei = live.imei;
+				st.finished = time();
+				state_write(st);
+				cleanup_staging();
+			} else {
+				state_write(st);
+			}
+		}
+	}
+
+	return {
+		ok: true,
+		imei: live.ok ? live.imei : null,
+		error: live.ok ? null : live.error,
+		state: st
+	};
+}
+
+function change_imei(target) {
+	target = trim(target || '');
+
+	if (!validate_luhn(target))
+		return { ok: false, error: 'Invalid IMEI: 15 digits with a valid Luhn check digit are required' };
+
+	let live = read_live_imei();
+	if (!live.ok)
+		return { ok: false, error: 'Cannot read the current IMEI: ' + live.error };
+	if (live.imei == target)
+		return { ok: true, already: true, imei: target };
+
+	let probe = modem_exec('echo SHELL_OK');
+	if (index(probe, 'SHELL_OK') < 0)
+		return { ok: false, error: 'Cannot open a shell on the modem', raw: probe };
+
+	let payload = encode_nv550(target);
+	let cmd = sprintf(
+		'mkdir -p %s && printf %s > %s && : > %s && : > %s && : > %s && rm -f %s && ' +
+		'sync && printf "PAYLOAD=" && od -An -tx1 %s && echo STAGE_OK',
+		shq(NV_DIR), shq(oct_escape(payload)), shq(NV_FILE),
+		shq(UPDATE_BACKUP), shq(FORCE_MODE), shq(NV_UPDATE), shq(RESET_FLAG),
+		shq(NV_FILE));
+
+	let out = modem_exec(cmd);
+	let p = index(out, 'PAYLOAD=');
+	let e = index(out, 'STAGE_OK');
+	if (p < 0 || e < 0 || e <= p)
+		return { ok: false, error: 'The modem did not accept the staged NV payload', raw: out };
+
+	let staged = parse_hex(substr(out, p + 8, e - p - 8));
+	if (!same_bytes(staged, payload))
+		return {
+			ok: false,
+			error: 'The staged NV payload does not match the requested IMEI',
+			staged: hex_of(staged),
+			expected: hex_of(payload)
+		};
+
+	let st = {
+		version: 1,
+		phase: 'staged',
+		target: target,
+		previous: live.imei,
+		payload: hex_of(payload),
+		checks: 0,
+		started: time()
+	};
+	if (!state_write(st)) {
+		/* Never leave a staged change behind without a record of it: the
+		 * next reboot would apply it silently. */
+		cleanup_staging();
+		return { ok: false, error: 'Could not save the change state on the router' };
+	}
+	modem_reboot_later(4);
+
+	return {
+		ok: true,
+		rebooting: true,
+		imei: live.imei,
+		target: target,
+		message: 'The new IMEI is staged. The modem restarts to apply it; the router restarts with it.'
+	};
+}
+
+function cancel_change() {
+	cleanup_staging();
+	system('rm -f ' + shq(STATE_FILE));
+	return { ok: true, cancelled: true };
+}
+
+function diag_read_nv550() {
+	if (!stat(DIAG_HELPER))
+		return { ok: false, error: 'No DIAG helper installed at ' + DIAG_HELPER + ' (optional)' };
+
+	/* The first transaction after the port appears is often lost because the
+	 * modem is still bringing the DIAG channel up; retry once. */
+	let out = run(DIAG_HELPER + ' read');
+	let res = null;
+	try { res = json(trim(out)); } catch (e) { res = null; }
+	if (type(res) == 'object' && res.ok) return res;
+
+	sleep(400);
+	out = run(DIAG_HELPER + ' read');
+	try { res = json(trim(out)); } catch (e) { res = null; }
+	if (type(res) == 'object' && res.ok) return res;
+	return { ok: false, error: 'DIAG NV 550 read failed', raw: out };
+}
+
+function backup_partitions() {
+	system('mkdir -p ' + shq(BACKUP_DIR));
+
+	let r1 = modem_exec(sprintf('/jrd-resource/bin/Jrdrwpartition oem r /tmp/oem_live.bin %d', PART_SIZE));
+	let r2 = modem_exec(sprintf('/jrd-resource/bin/Jrdrwpartition rfbackup r /tmp/rfbackup_live.bin %d', PART_SIZE));
+
+	let ok1 = modem_copy_from('/tmp/oem_live.bin', BACKUP_DIR + '/oem_backup.bin');
+	let ok2 = modem_copy_from('/tmp/rfbackup_live.bin', BACKUP_DIR + '/rfbackup_backup.bin');
+
+	modem_exec('rm -f /tmp/oem_live.bin /tmp/rfbackup_live.bin');
+
+	if (ok1 && ok2) {
+		let live = read_live_imei();
+		return {
+			ok: true,
+			imei: live.ok ? live.imei : null,
+			oem_backup: BACKUP_DIR + '/oem_backup.bin',
+			rfbackup_backup: BACKUP_DIR + '/rfbackup_backup.bin',
+			size: PART_SIZE
+		};
+	}
+	return { ok: false, error: 'Failed to dump the oem/rfbackup partitions', oem: r1, rfbackup: r2 };
+}
+
+/* ------------------------------------------------------------------ CLI */
+
+let cmd = ARGV[0];
+
+if (cmd == 'read') {
+	printf('%J\n', read_live_imei());
+}
+else if (cmd == 'status') {
+	printf('%J\n', imei_status());
+}
+else if (cmd == 'restore' || cmd == 'set') {
+	printf('%J\n', change_imei(ARGV[1]));
+}
+else if (cmd == 'cancel') {
+	printf('%J\n', cancel_change());
+}
+else if (cmd == 'backup') {
+	printf('%J\n', backup_partitions());
+}
+else if (cmd == 'diag-read') {
+	printf('%J\n', diag_read_nv550());
+}
+else if (cmd == 'encode') {
+	let imei = ARGV[1] || '';
+	if (!validate_luhn(imei))
+		printf('%J\n', { ok: false, error: 'Invalid IMEI' });
+	else
+		printf('%J\n', { ok: true, imei: imei, payload: hex_of(encode_nv550(imei)) });
+}
+else {
+	printf('%J\n', {
+		ok: false,
+		usage: 'hh4xmodem-nv <read|status|restore <imei>|cancel|backup|diag-read|encode <imei>>'
+	});
+	exit(1);
+}

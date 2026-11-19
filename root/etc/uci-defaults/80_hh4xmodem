@@ -18,4 +18,8 @@ if pidof rpcd >/dev/null 2>&1; then
 	/etc/init.d/rpcd reload 2>/dev/null || /etc/init.d/rpcd restart 2>/dev/null
 fi
 
+# Answer the modem's 1 Hz "system start" poll so it stops logging it.
+/etc/init.d/hh4xmodem enable 2>/dev/null
+/etc/init.d/hh4xmodem start 2>/dev/null
+
 exit 0

@@ -40,15 +40,18 @@ The dashboard has five tabs:
 
 - **Connection control** — connect and disconnect the data session, start/stop auto-connect.
 - **Signal monitoring** — RSRP, RSSI, RSRQ and SINR with colour-graded bars, plus signal level, band, cell ID, eNB ID, PLMN and MCC/MNC.
+- **Live signal trend** — 40-sample sparklines for RSRP and signal quality, with min/max and a reset button, for finding the best router position.
 - **Network mode selection** — 2G only, 3G only, 2G/3G auto, LTE only, 2G/3G auto with 4G fallback, 3G/4G auto, or full auto (recommended).
 - **NAT controls** — enable or disable the modem's own UPnP and DMZ host, with read-back verification and a warning before DMZ is turned on.
 - **Data usage tracking** — upload and download counters with configurable reset periods, resettable from the UI.
-- **SMS** — read inbox, sent, drafts and outbox, read individual messages, send new ones, delete single or bulk.
-- **USSD** — run USSD codes such as balance and data-remaining checks, with proper session handling.
+- **SMS** — read inbox, sent, drafts and outbox, read individual messages, send new ones, delete single or bulk. Verification codes are detected and can be copied with one click.
+- **USSD** — run USSD codes such as balance and data-remaining checks, with proper session handling and configurable one-tap presets.
 - **Call log** — missed, received, dialled and combined call history with paging.
+- **IMEI / NV maintenance** — read the live IMEI, download an NV 550 backup, and stage a validated IMEI change that the modem applies on restart, with automatic verification afterwards.
 - **SIM & modem maintenance** — PIN/PUK unlock, PIN change and enable/disable, modem reboot/reset, profile (APN) add/edit/delete/default.
+- **Quiet modem log** — a small service answers the modem's 1 Hz "system start" poll so stock OpenWrt does not fill the kernel log with `system start` / `get fd list fail!`.
 - **Auto-refresh** — configurable poll interval, so the dashboard stays current without reloading.
-- **No external dependencies** — talks to the modem's built-in HTTP API through `ucode` + `rpcd`, which LuCI already ships.
+- **No external dependencies** — talks to the modem's built-in HTTP API through `ucode` + `rpcd`, which LuCI already ships. The IMEI page additionally uses `sms-tool` for `AT+GSN` when installed.
 
 ---
 
@@ -58,7 +61,7 @@ The dashboard has five tabs:
 | --- | --- |
 | **Router** | **HH40V** or **HH41V** (Qualcomm **MDM9207** modem) |
 | **Firmware** | OpenWrt with LuCI, `23.05` and newer (developed and tested on `25.12`) |
-| **Packages** | `luci-base`, `ucode-mod-socket` — pulled in automatically |
+| **Packages** | `luci-base`, `ucode-mod-socket` — pulled in automatically. `sms-tool` is optional and used by the IMEI page to read `AT+GSN`. |
 
 ---
 
@@ -71,17 +74,17 @@ and install it on the router:
 
 ```sh
 # OpenWrt 25.12+ (apk)
-apk add --allow-untrusted luci-app-hh4xmodem-1.1.0-r2.apk
+apk add --allow-untrusted luci-app-hh4xmodem-1.2.0-r1.apk
 
 # Older releases (opkg)
-opkg install luci-app-hh4xmodem-1.1.0-r2.apk
+opkg install luci-app-hh4xmodem-1.2.0-r1.apk
 ```
 
 Or fetch it directly over SSH:
 
 ```sh
 wget -O /tmp/hh4xmodem.apk \
-  https://github.com/devopnem/luci-app-hh4xmodem/releases/latest/download/luci-app-hh4xmodem-1.1.0-r2.apk
+  https://github.com/devopnem/luci-app-hh4xmodem/releases/latest/download/luci-app-hh4xmodem-1.2.0-r1.apk
 apk add --allow-untrusted /tmp/hh4xmodem.apk
 ```
 
@@ -160,9 +163,11 @@ uci show hh4xmodem
 | `settings.modem_ip` | `192.168.225.1` | IP address of the modem's HTTP API |
 | `settings.modem_port` | `2016` | Port of the modem's HTTP API |
 | `settings.refresh_interval` | `3` | Dashboard auto-refresh interval, in seconds |
+| `settings.ussd_preset` | built-in list | Extra USSD quick presets, as `Carrier\|Label\|*code#` |
 
 ```sh
 uci set hh4xmodem.settings.refresh_interval='5'
+uci add_list hh4xmodem.settings.ussd_preset='MyCarrier|Balance|*100#'
 uci commit hh4xmodem
 /etc/init.d/rpcd restart
 ```
@@ -199,6 +204,25 @@ capability, which administrators have by default. Check it exists at
 **Values look stale.**
 The modem takes a few seconds to answer after a mode switch or reboot. Wait for the
 modem to re-register on the network, then refresh.
+
+**The kernel log fills with `system start` / `get fd list fail!`.**
+That is the modem polling the router once per second after boot. The package ships
+`/etc/init.d/hh4xmodem`, which answers the poll over the pack protocol. If the log keeps
+growing, check that the service runs and that it uses the right modem address:
+
+```sh
+/etc/init.d/hh4xmodem enable
+/etc/init.d/hh4xmodem restart
+pgrep -af hh4xmodem-ready
+```
+
+**The IMEI page says "The modem did not answer AT+GSN".**
+Install `sms-tool` (it provides `/usr/bin/sms_tool`) and make sure the modem's AT port
+exists, usually `/dev/ttyUSB2`. To check another port, run the helper directly:
+
+```sh
+AT_PORT=/dev/ttyUSB3 /usr/bin/hh4xmodem-nv read
+```
 
 ---
 
@@ -240,7 +264,8 @@ git clone https://github.com/devopnem/luci-app-hh4xmodem.git
 cd luci-app-hh4xmodem
 # edit htdocs/luci-static/resources/view/hh4xmodem/ (LuCI views)
 #      root/usr/share/rpcd/ucode/hh4xmodem.uc        (rpcd backend)
-#      root/usr/bin/                                 (AT helpers)
+#      root/usr/share/ucode/hh4xmodem/pack.uc        (pack protocol client)
+#      root/usr/bin/                                 (AT / NV helpers)
 ```
 
 Keep changes focused, match the existing tab-indent style, and describe what you tested

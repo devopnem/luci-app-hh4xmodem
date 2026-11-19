@@ -80,6 +80,63 @@ function formatDate(dateStr) {
 	return dateStr;
 }
 
+
+// Extract a likely 4-8 digit OTP / verification code from an SMS body.
+// Prioritizes codes near OTP keywords (EN/FR/AR) and skips phone numbers or dates.
+function extractOtp(text) {
+	if (!text || typeof text !== 'string') return null;
+	var kwRe = /(?:code|otp|pin|passcode|token|verification|v[eé]rification|confirmation|validation|mot de passe|رمز|كود|تحقق|تأكيد)[^0-9]{0,20}(\d{4,8})\b/i;
+	var m = text.match(kwRe);
+	if (m) return m[1];
+	var cleaned = text
+		.replace(/\+?\d{1,3}[\s.-]?\d{2,4}[\s.-]?\d{2,4}[\s.-]?\d{2,4}/g, ' ')
+		.replace(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b/g, ' ')
+		.replace(/\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/g, ' ')
+		.replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ');
+	var matches = cleaned.match(/\b(\d{4,8})\b/g);
+	if (!matches) return null;
+	for (var i = 0; i < matches.length; i++) {
+		var cand = matches[i];
+		if (/^(19|20)\d{2}$/.test(cand)) continue;
+		return cand;
+	}
+	return null;
+}
+
+// Works over both HTTPS (Clipboard API) and plain HTTP LuCI (execCommand fallback).
+function copyToClipboard(text, btn, idleLabel) {
+	var done = function () {
+		if (!btn) return;
+		btn.textContent = _('✓ Copied');
+		btn.classList.add('hh4x-otp-copied');
+		setTimeout(function () {
+			btn.textContent = idleLabel;
+			btn.classList.remove('hh4x-otp-copied');
+		}, 1500);
+	};
+	var fallback = function () {
+		var ta = document.createElement('textarea');
+		ta.value = text;
+		ta.setAttribute('readonly', '');
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		document.body.appendChild(ta);
+		ta.select();
+		try {
+			document.execCommand('copy');
+			done();
+		} catch (e) {
+			ui.addNotification(null, E('p', [_('Copy failed. Code: ') + text]), 'info');
+		}
+		document.body.removeChild(ta);
+	};
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(text).then(done).catch(fallback);
+	} else {
+		fallback();
+	}
+}
+
 function truncate(str, len) {
 	if (!str) return '';
 	if (str.length <= len) return str;
@@ -192,9 +249,22 @@ function showSMSModal(sms) {
 		}
 	}, [_('Delete')]);
 
-	body.appendChild(E('div', { 'class': 'hh4x-modal-actions' }, [
-		deleteBtn
-	]));
+	let modalActions = [];
+	let modalOtp = extractOtp(sms.SMSContent || '');
+	if (modalOtp) {
+		let otpLabel = _('Copy OTP: ') + modalOtp;
+		let copyBtn = E('button', {
+			'class': 'cbi-button cbi-button-action hh4x-otp-btn',
+			'click': function (e) {
+				e.stopPropagation();
+				copyToClipboard(modalOtp, copyBtn, otpLabel);
+			}
+		}, [otpLabel]);
+		modalActions.push(copyBtn);
+	}
+	modalActions.push(deleteBtn);
+
+	body.appendChild(E('div', { 'class': 'hh4x-modal-actions' }, modalActions));
 
 	overlay.style.display = 'flex';
 }
@@ -413,9 +483,24 @@ return view.extend({
 							E('span', { 'class': 'hh4x-sms-date' }, [formatDate(sms.SMSTime)])
 						]),
 						E('div', { 'class': 'hh4x-sms-preview' }, [truncate(content, 100)]),
-						E('div', { 'class': 'hh4x-sms-id' }, [
-							E('span', {}, ['ID: ' + sms.SMSId])
-						])
+						E('div', { 'class': 'hh4x-sms-id hh4x-sms-footer' }, (function () {
+							let items = [E('span', {}, ['ID: ' + sms.SMSId])];
+							if (currentKey === 'inbox') {
+								let otp = extractOtp(content);
+								if (otp) {
+									let label = _('Copy OTP: ') + otp;
+									let otpBtn = E('button', {
+										'class': 'cbi-button cbi-button-action hh4x-otp-btn hh4x-otp-pill',
+										'click': function (e) {
+											e.stopPropagation();
+											copyToClipboard(otp, otpBtn, label);
+										}
+									}, [label]);
+									items.push(otpBtn);
+								}
+							}
+							return items;
+						})())
 					])
 				]);
 

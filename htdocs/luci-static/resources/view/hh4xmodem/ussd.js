@@ -1,5 +1,5 @@
 /*
- * ussd.js - USSD code sender for HH4xModem
+ * ussd.js - USSD code sender with quick presets for HH4xModem
  * Copyright (C) 2026 HH4xModem
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,9 +18,10 @@
 'use strict';
 'require rpc';
 'require ui';
+'require uci';
 'require view';
 
-// .ussd-output and .hh4x-warning both live in this stylesheet.
+// .ussd-output, .hh4x-warning, and .hh4x-ussd-presets live in this stylesheet.
 if (!document.querySelector('link[href*="hh4xmodem.css"]')) {
 	document.querySelector('head').appendChild(E('link', {
 		'rel': 'stylesheet',
@@ -40,6 +41,35 @@ const callSimStatus = rpc.declare({
 	object: 'hh4xmodem',
 	method: 'get_sim_status'
 });
+
+const DEFAULT_PRESETS = [
+	{ group: 'Djezzy',  label: _('Balance'),     code: '*710#' },
+	{ group: 'Djezzy',  label: _('Offers/Data'), code: '*720#' },
+	{ group: 'Mobilis', label: _('Balance'),     code: '*222#' },
+	{ group: 'Ooredoo', label: _('Balance'),     code: '*200#' },
+	{ group: 'Ooredoo', label: _('Internet'),    code: '*113#' }
+];
+
+// Load custom USSD presets from UCI (/etc/config/hh4xmodem):
+//   list ussd_preset 'Carrier|Label|*123#'
+//   list ussd_preset 'Label|*123#'
+// Falls back to DEFAULT_PRESETS when no custom list is configured.
+function loadUssdPresets() {
+	var raw = uci.get('hh4xmodem', 'settings', 'ussd_preset');
+	if (!raw) return DEFAULT_PRESETS;
+	var entries = Array.isArray(raw) ? raw : [raw];
+	var parsed = [];
+	entries.forEach(function(item) {
+		if (typeof item !== 'string') return;
+		var parts = item.split('|').map(function(s) { return s.trim(); });
+		if (parts.length >= 3 && parts[2]) {
+			parsed.push({ group: parts[0] || _('Custom'), label: parts[1] || parts[2], code: parts[2] });
+		} else if (parts.length === 2 && parts[1]) {
+			parsed.push({ group: _('Custom'), label: parts[0] || parts[1], code: parts[1] });
+		}
+	});
+	return parsed.length ? parsed : DEFAULT_PRESETS;
+}
 
 // USSD is a network service: without a usable SIM the modem never answers
 // SendUSSD, so the request just hangs until the XHR times out. Check up front
@@ -70,12 +100,54 @@ return view.extend({
 		// A failed SIM read must not block the page; the backend re-checks
 		// before it actually sends, and the Send button stays enabled so the
 		// user is never stuck with a form that cannot be used.
-		return callSimStatus().catch(function() { return null; });
+		return Promise.all([
+			callSimStatus().catch(function() { return null; }),
+			uci.load('hh4xmodem').catch(function() { return null; })
+		]).then(function(res) {
+			return { sim: res[0], presets: loadUssdPresets() };
+		});
 	},
 
-	render: function(sim) {
+	render: function(data) {
+		var sim = data ? data.sim : null;
+		var presets = (data && data.presets) ? data.presets : DEFAULT_PRESETS;
 		var blocked = simBlockReason(sim);
 		var fieldStyle = 'width: 100%; direction: ltr; font-family: monospace; font-size: 1.1em;';
+
+		// Group presets by carrier/category while preserving insertion order.
+		var groups = [];
+		var groupMap = {};
+		presets.forEach(function(p) {
+			var g = p.group || _('Presets');
+			if (!groupMap[g]) {
+				groupMap[g] = [];
+				groups.push({ name: g, items: groupMap[g] });
+			}
+			groupMap[g].push(p);
+		});
+
+		var presetRows = groups.map(function(g) {
+			return E('div', { 'class': 'hh4x-ussd-group' }, [
+				E('span', { 'class': 'hh4x-ussd-group-label' }, [g.name]),
+				E('div', { 'class': 'hh4x-ussd-group-btns' }, g.items.map(function(p) {
+					return E('button', {
+						'class': 'cbi-button cbi-button-neutral hh4x-ussd-preset-btn',
+						'title': p.code,
+						'disabled': blocked ? true : undefined,
+						'click': function(ev) {
+							ev.preventDefault();
+							var inp = document.getElementById('ussd-code');
+							if (inp) inp.value = p.code;
+							sendUssdCode(p.code);
+						}
+					}, [
+						E('span', { 'class': 'hh4x-ussd-preset-name' }, [p.label]),
+						' ',
+						E('code', { 'class': 'hh4x-ussd-preset-code' }, [p.code])
+					]);
+				}))
+			]);
+		});
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [_('USSD Codes')]),
@@ -89,6 +161,10 @@ return view.extend({
 			E('hr'),
 			E('div', { 'class': 'cbi-section' }, [
 				E('div', { 'class': 'cbi-section-node' }, [
+					E('div', { 'class': 'cbi-value' }, [
+						E('label', { 'class': 'cbi-value-title' }, [_('Quick Presets')]),
+						E('div', { 'class': 'cbi-value-field hh4x-ussd-presets' }, presetRows)
+					]),
 					E('div', { 'class': 'cbi-value' }, [
 						E('label', { 'class': 'cbi-value-title' }, [_('USSD Code')]),
 						E('div', { 'class': 'cbi-value-field' }, [
@@ -168,6 +244,8 @@ function setButtonsEnabled(enabled) {
 	var code = document.getElementById('ussd-code');
 	if (send) send.disabled = !enabled;
 	if (code) code.disabled = !enabled;
+	var presets = document.querySelectorAll('.hh4x-ussd-preset-btn');
+	for (var i = 0; i < presets.length; i++) presets[i].disabled = !enabled;
 }
 
 function showOutput(msg) {

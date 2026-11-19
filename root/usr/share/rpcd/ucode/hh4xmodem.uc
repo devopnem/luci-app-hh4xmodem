@@ -1,52 +1,15 @@
 #!/usr/bin/ucode
 'use strict';
 import { popen } from 'fs';
-import * as uci from 'uci';
+import * as pack from 'hh4xmodem.pack';
 
 function shellquote(value) {
 	if (value == null) value = '';
 	return "'" + replace(value, "'", "'\\''") + "'";
 }
 
-const PACK_HELPER = '/usr/bin/hh4xmodem-pack';
-
-function get_modem_env() {
-	let ctx = uci.cursor();
-	let ip = ctx.get('hh4xmodem', 'settings', 'modem_ip') || '192.168.225.1';
-	let port = ctx.get('hh4xmodem', 'settings', 'modem_port') || '2016';
-	ctx.unload();
-	return sprintf('MODEM_IP=%s MODEM_PORT=%s', shellquote(ip), shellquote(port));
-}
-
 function pack_call(method, params) {
-	params = params || '{}';
-	let env = get_modem_env();
-	let cmd = sprintf('%s %s %s %s 2>/dev/null', env, PACK_HELPER, shellquote(method), shellquote(params));
-	let fd = popen(cmd);
-	if (!fd) return { error: 'Failed to execute pack helper', code: -1 };
-	let output = '';
-	let line;
-	while ((line = fd.read('line')) != null) output += line;
-	fd.close();
-	output = trim(output);
-	if (!length(output)) return { error: 'Empty response from modem', code: -1 };
-	let start = index(output, '{');
-	if (start < 0) return { error: 'No JSON object in response', raw: output, code: -1 };
-	let depth = 0;
-	let end = -1;
-	for (let i = start; i < length(output); i++) {
-		let c = substr(output, i, 1);
-		if (c == '{') depth++;
-		if (c == '}') {
-			depth--;
-			if (depth == 0) { end = i; break; }
-		}
-	}
-	if (end < 0) return { error: 'Unclosed JSON object', raw: output, code: -1 };
-	let clean = substr(output, start, end - start + 1);
-	let result = json(clean);
-	if (result == null) return { error: 'Failed to parse JSON', raw: clean, code: -1 };
-	return result;
+	return pack.call(method, params || '{}');
 }
 
 function get_system_info() { return pack_call('GetSystemInfo'); }
@@ -469,31 +432,20 @@ function get_call_log_list(list_type, page) {
 
 function get_call_log_count() { return pack_call('GetCallLogCountInfo') || { error: 'No result' }; }
 
-function run_script(script) {
-	let env = get_modem_env();
-	let cmd = sprintf('%s %s 2>/dev/null', env, script);
-	let fd = popen(cmd);
-	if (!fd) return { error: 'Failed to execute helper', code: -1 };
-	let output = '';
-	let line;
-	while ((line = fd.read('line')) != null) output += line;
-	fd.close();
-	output = trim(output);
-	if (!length(output)) return { error: 'Empty response', code: -1 };
-	let data = json(output);
-	if (data == null) return { error: 'Failed to parse JSON', code: -1 };
-	let result = {};
-	for (let k, v in data) {
-		if (type(v) == 'object' && v.result != null)
-			result[k] = v.result;
-		else
-			result[k] = v;
-	}
-	return result;
-}
+const CORE_METHODS = [
+	'GetNetworkInfo', 'GetSystemInfo', 'GetSystemStatus',
+	'GetConnectionState', 'GetSimStatus', 'GetUsageRecord'
+];
 
-function get_all() { return run_script('/usr/bin/hh4xmodem-get-all'); }
-function get_all_full() { return run_script('/usr/bin/hh4xmodem-get-all full'); }
+const EXTRA_METHODS = [
+	'GetAutoValidatePinState', 'GetSMSSettings', 'GetSMSStorageState',
+	'GetLanSettings', 'GetUpnpSettings', 'getDMZInfo', 'GetCurrentLanguage',
+	'GetNetworkSettings', 'GetNetworkRegisterState', 'GetConnectionSettings',
+	'GetProfileList', 'getCurrentProfile'
+];
+
+function get_all() { return pack.call_batch(CORE_METHODS); }
+function get_all_full() { return pack.call_batch([...CORE_METHODS, ...EXTRA_METHODS]); }
 
 function get_dashboard() {
 	return {
@@ -568,6 +520,39 @@ function set_default_profile(profile_id) {
 	return r || { error: 'Set failed', code: -1 };
 }
 
+const NV_HELPER = '/usr/bin/hh4xmodem-nv';
+
+// The NV helper does the real work (staging on the modem, state, verification).
+// It always prints a single JSON object, so a broken helper is reported as an
+// error object instead of an exception.
+function nv_call(args) {
+	let fd = popen(sprintf('%s %s 2>/dev/null', NV_HELPER, args));
+	if (!fd) return { ok: false, error: 'Failed to execute the NV helper', code: -1 };
+	let out = '';
+	let line;
+	while ((line = fd.read('line')) != null) out += line;
+	fd.close();
+	let res = null;
+	try { res = json(trim(out)); } catch (e) { res = null; }
+	return (type(res) == 'object') ? res : { ok: false, error: 'Invalid response from the NV helper', raw: out, code: -1 };
+}
+
+// Live IMEI plus the pending-change state.  `status` also resolves a staged
+// change: as soon as the modem reports the new IMEI it is marked verified and
+// the staging files are removed.
+function get_imei() { return nv_call('status'); }
+
+function set_imei(imei) {
+	if (imei == null || !length(trim(imei))) return { ok: false, error: 'Enter an IMEI', code: -1 };
+	return nv_call(sprintf('restore %s', shellquote(trim(imei))));
+}
+
+function cancel_imei_change() { return nv_call('cancel'); }
+
+function get_nv_imei() { return nv_call('read'); }
+function backup_nv_partitions() { return nv_call('backup'); }
+function restore_nv_backup(imei) { return set_imei(imei); }
+
 const methods = {
 	get_system_info:        { call: function() { return get_system_info(); } },
 	get_status:             { call: function() { return get_status(); } },
@@ -621,6 +606,12 @@ const methods = {
 	edit_profile:            { args: { profile: {} }, call: function(request) { return edit_profile(request.args.profile); } },
 	delete_profile:          { args: { profile_id: 0 }, call: function(request) { return delete_profile(request.args.profile_id); } },
 	set_default_profile:     { args: { profile_id: 0 }, call: function(request) { return set_default_profile(request.args.profile_id); } },
+	get_nv_imei:             { call: get_nv_imei },
+	get_imei:                { call: get_imei },
+	set_imei:                { args: { imei: '' }, call: function(request) { return set_imei(request.args.imei); } },
+	cancel_imei_change:      { call: cancel_imei_change },
+	backup_nv_partitions:   { call: backup_nv_partitions },
+	restore_nv_backup:       { args: { imei: '' }, call: function(request) { return restore_nv_backup(request.args.imei); } },
 	reset_modem:            { call: reset_modem },
 };
 

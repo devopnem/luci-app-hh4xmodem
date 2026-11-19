@@ -44,5 +44,14 @@
 			"type": "view",
 			"path": "hh4xmodem/ussd"
 		}
+	},
+
+	"admin/hh4xmodem/imei": {
+		"title": "IMEI",
+		"order": 5,
+		"action": {
+			"type": "view",
+			"path": "hh4xmodem/imei"
+		}
 	}
 }

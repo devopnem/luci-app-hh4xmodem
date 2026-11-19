@@ -1,0 +1,18 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2026 HH4xModem
+#
+# Keeps the modem from logging "system start" once per second: the helper
+# answers core_app's startup poll over the pack protocol on port 2016.
+
+START=95
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/bin/hh4xmodem-ready
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_close_instance
+}

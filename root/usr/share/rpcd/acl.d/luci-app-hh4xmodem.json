@@ -32,7 +32,10 @@
 					"get_call_log_count",
 					"get_dashboard",
 					"get_all",
-					"get_all_full"
+					"get_all_full",
+					"get_nv_imei",
+					"get_imei",
+					"backup_nv_partitions"
 				]
 			},
 			"uci": [
@@ -65,7 +68,10 @@
 					"set_connection_settings",
 					"edit_profile",
 					"delete_profile",
-					"set_default_profile"
+					"set_default_profile",
+					"restore_nv_backup",
+					"set_imei",
+					"cancel_imei_change"
 				]
 			},
 			"uci": [
