@@ -26,6 +26,7 @@ jobs:
           SDK_TAG: ${{ inputs.openwrt_tag || 'openwrt-25.12' }}
         run: |
           mkdir -p _pkg dist
+          chmod 777 dist
           if [ -f Makefile ]; then
             cp -a Makefile htdocs root _pkg/
           else
@@ -46,9 +47,9 @@ jobs:
               cp -a /src package/luci-app-hh4xmodem
               make defconfig
               make package/luci-app-hh4xmodem/compile V=s
-              find bin/packages -type f -name "luci-app-hh4xmodem*.apk" -exec cp -v {} /out/ \;
+              find bin/packages -type f -name "luci-app-hh4xmodem*.apk" -exec cp -v {} /out/ +
             '
-          ls -lh dist/
+          ls -lh dist/*.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -56,4 +57,5 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
           name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Latest Build' }}
           make_latest: true
+          fail_on_unmatched_files: true
           files: dist/*.apk
