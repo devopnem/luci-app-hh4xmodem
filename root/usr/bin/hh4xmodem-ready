@@ -1,33 +1,15 @@
-#!/bin/sh
-# hh4xmodem-ready - answer the modem "system start" poll
-# Copyright (C) 2026 HH4xModem
-#
-# After boot core_app polls the router once per second and announces
-# "system start" on the kernel log until the router reports the Ethernet
-# status.  The stock mainboard firmware answers this request during startup;
-# a plain OpenWrt does not, so the log fills with
-#
-#     system start
-#     get fd list fail!
-#
-# (or "send remote sock ..." while a client is connected) at 1 Hz, forever.
-#
-# Sending ethWanStatus with both ethwan_status and ethlan_status stops the
-# poll.  Values must be integers; with ethlan_status 0 the modem just stops
-# polling and sends nothing.  core_app forgets the answer on restart, so the
-# request is repeated while the modem is reachable.
+#!/usr/bin/ucode
+// hh4xmodem-ready - answer the modem "system start" poll without shell forks
+// Copyright (C) 2026 HH4xModem
+// Licensed under the Apache License, Version 2.0.
 
-PACK=/usr/bin/hh4xmodem-pack
-ACK='{"ethwan_status":0,"ethlan_status":0}'
+'use strict';
 
-# Honor the modem IP configured for the LuCI app.
-MODEM_IP=$(uci -q get hh4xmodem.settings.modem_ip)
-[ -n "$MODEM_IP" ] || MODEM_IP=192.168.225.1
+import * as pack from 'hh4xmodem.pack';
 
-while :; do
-	if MODEM_IP=$MODEM_IP "$PACK" ethWanStatus "$ACK" >/dev/null 2>&1; then
-		sleep 60
-	else
-		sleep 5
-	fi
-done
+const ACK = '{"ethwan_status":0,"ethlan_status":0}';
+
+while (true) {
+	let r = pack.call_raw('ethWanStatus', ACK);
+	sleep(r && r.error == null ? 60000 : 5000);
+}

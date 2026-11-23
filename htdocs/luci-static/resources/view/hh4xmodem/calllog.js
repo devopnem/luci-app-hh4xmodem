@@ -1,5 +1,5 @@
 /*
- * calllog.js - Call log viewer for HH4xModem
+ * calllog.js - Call log viewer with filter tabs, pagination & contact resolution
  * Copyright (C) 2026 HH4xModem
  * Licensed under the Apache License, Version 2.0.
  */
@@ -8,19 +8,19 @@
 'require rpc';
 'require view';
 'require ui';
+'require hh4xmodem.common as hh4x';
 
-// Load custom stylesheet once
-if (!document.querySelector('link[href*="hh4xmodem.css"]')) {
-	document.querySelector('head').appendChild(E('link', {
-		'rel': 'stylesheet',
-		'type': 'text/css',
-		'href': L.resource('view/hh4xmodem/hh4xmodem.css') + '?_=' + Date.now()
-	}));
-}
+hh4x.ensureCss();
 
 const callCallLogData = rpc.declare({
 	object: 'hh4xmodem',
-	method: 'get_calllog_data'
+	method: 'get_calllog_data',
+	params: { list_type: 0, page: 1 }
+});
+
+const callContactsCached = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'get_contacts_cached'
 });
 
 const callClearCallLog = rpc.declare({
@@ -29,27 +29,18 @@ const callClearCallLog = rpc.declare({
 	reject: true
 });
 
-// ---- Helpers ----
+var currentView = null;
+var callViewState = { list_type: 0, page: 1 };
+var contactMap = { exact: {}, suffix: {} };
 
-function formatDate(dateStr) {
-	if (!dateStr) return '--';
-	// Format: "2026-06-06 05:44:17" -> relative or short
-	return dateStr;
-}
-
-function formatDuration(seconds) {
-	if (seconds == null || seconds == 0) return '--';
-	if (seconds < 60) return seconds + 's';
-	const m = Math.floor(seconds / 60);
-	const s = seconds % 60;
-	if (m < 60) return m + 'm ' + s + 's';
-	const h = Math.floor(m / 60);
-	const mn = m % 60;
-	return h + 'h ' + mn + 'm ' + s + 's';
-}
+const CALL_TABS = [
+	{ type: 0, label: _('All') },
+	{ type: 1, label: _('Incoming') },
+	{ type: 2, label: _('Outgoing') },
+	{ type: 3, label: _('Missed') }
+];
 
 function callTypeLabel(type) {
-	// CallLogType: 0=incoming, 1=outgoing, 2=missed, 3=?
 	switch (type) {
 		case 0: return { text: _('Incoming'), cls: 'call-incoming' };
 		case 1: return { text: _('Outgoing'), cls: 'call-outgoing' };
@@ -58,20 +49,16 @@ function callTypeLabel(type) {
 	}
 }
 
-function createCard(title, content) {
-	return E('div', { 'class': 'cbi-section hh4x-card' }, [
-		E('div', { 'class': 'hh4x-card-header' }, [
-			E('h3', { 'class': 'hh4x-card-title' }, [title])
-		]),
-		E('div', { 'class': 'hh4x-card-body' }, content)
-	]);
-}
-
-function createInfoRow(label, value) {
-	return E('div', { 'class': 'hh4x-info-row' }, [
-		E('span', { 'class': 'hh4x-info-label' }, [label]),
-		E('span', { 'class': 'hh4x-info-value' }, [value != null ? String(value) : '--'])
-	]);
+function reloadCallLog() {
+	if (!currentView) return;
+	currentView.load().then(function (newData) {
+		var newBody = currentView.render(newData);
+		var container = document.querySelector('.hh4x-page');
+		if (container && container.parentNode)
+			container.parentNode.replaceChild(newBody, container);
+	}).catch(function (err) {
+		ui.addNotification(null, E('p', [_('Error loading call log: ') + String(err)]), 'error');
+	});
 }
 
 return view.extend({
@@ -80,51 +67,82 @@ return view.extend({
 	handleReset: null,
 
 	load: function () {
-		return callCallLogData({ list_type: 0, page: 1 });
+		return Promise.all([
+			callCallLogData({ list_type: callViewState.list_type, page: callViewState.page }),
+			callContactsCached().catch(function () { return null; })
+		]).then(function (res) {
+			var cData = res[1] || {};
+			contactMap = hh4x.buildContactMap(Array.isArray(cData.contacts) ? cData.contacts : []);
+			return res[0] || {};
+		});
 	},
 
 	render: function (data) {
-		let countInfo = data.GetCallLogCountInfo || {};
-		let listData = data.GetCallLogList || {};
-		let callLog = listData.CallLogList || [];
+		currentView = this;
+		var countInfo = data.GetCallLogCountInfo || {};
+		var listData = data.GetCallLogList || {};
+		var callLog = listData.CallLogList || [];
+		var totalPages = parseInt(listData.TotalPageCount, 10) || 1;
 
-		let body = E('div', { 'class': 'hh4x-page' }, [
-			E('div', { 'class': 'hh4x-page-header' }, [
-				E('h2', { 'class': 'hh4x-page-title' }, [_('Call Log')]),
-				E('p', { 'class': 'hh4x-page-desc' }, [
-					_('View incoming, outgoing, and missed call history from the modem.')
+		var tabBar = E('div', { 'class': 'hh4x-sms-tabs' },
+			CALL_TABS.map(function (t) {
+				return E('button', {
+					'class': 'hh4x-sms-tab cbi-button' + (t.type === callViewState.list_type ? ' hh4x-sms-tab-active cbi-button-action' : ' cbi-button-neutral'),
+					'click': function () {
+						if (callViewState.list_type !== t.type) {
+							callViewState.list_type = t.type;
+							callViewState.page = 1;
+							reloadCallLog();
+						}
+					}
+				}, [t.label]);
+			})
+		);
+
+		var body = E('div', { 'class': 'hh4x-page' }, [
+			E('div', { 'class': 'hh4x-page-header hh4x-header-flex' }, [
+				E('div', {}, [
+					tabBar,
+					E('h2', { 'class': 'hh4x-page-title' }, [_('Call Log')]),
+					E('p', { 'class': 'hh4x-page-desc' }, [
+						_('View incoming, outgoing, and missed call history from the modem.')
+					])
 				]),
-				E('button', {
-					'class': 'cbi-button cbi-button-negative',
-					'style': 'margin-top:8px;',
-					'click': function (e) {
-						e.preventDefault();
-						if (!confirm(_('Clear all call log entries? This cannot be undone.'))) return;
-						var btn = e.target;
-						btn.disabled = true;
-						btn.textContent = _('Clearing...');
-						callClearCallLog().then(function (r) {
-							if (r && r.error == null) {
-								btn.textContent = _('✓ Cleared');
-								setTimeout(function () { window.location.reload(); }, 2000);
-							} else {
-								ui.addNotification(null, E('p', [_('Clear failed: ') + (r?.error || _('Unknown error'))]), 'error');
+				E('div', { 'class': 'hh4x-header-actions' }, [
+					E('button', {
+						'class': 'cbi-button cbi-button-neutral',
+						'click': function () { reloadCallLog(); }
+					}, [_('Refresh')]),
+					E('button', {
+						'class': 'cbi-button cbi-button-negative',
+						'click': function (e) {
+							e.preventDefault();
+							if (!confirm(_('Clear all call log entries? This cannot be undone.'))) return;
+							var btn = e.target;
+							btn.disabled = true;
+							btn.textContent = _('Clearing...');
+							callClearCallLog().then(function (r) {
+								if (r && r.error == null) {
+									callViewState.page = 1;
+									reloadCallLog();
+								} else {
+									ui.addNotification(null, E('p', [_('Clear failed: ') + (r?.error || _('Unknown error'))]), 'error');
+									btn.disabled = false;
+									btn.textContent = _('Clear All');
+								}
+							}).catch(function (err) {
+								ui.addNotification(null, E('p', [_('Error: ') + String(err)]), 'error');
 								btn.disabled = false;
 								btn.textContent = _('Clear All');
-							}
-						}).catch(function (err) {
-							ui.addNotification(null, E('p', [_('Error: ') + String(err)]), 'error');
-							btn.disabled = false;
-							btn.textContent = _('Clear All');
-						});
-					}
-				}, [_('Clear All')])
+							});
+						}
+					}, [_('Clear All')])
+				])
 			])
 		]);
 
-		// ---- Summary Card ----
-		let totalCalls = countInfo.TotalUsedCount || 0;
-		let summaryCard = createCard(_('Call Summary'), [
+		var totalCalls = countInfo.TotalUsedCount || 0;
+		body.appendChild(hh4x.createCard(_('Call Summary'), [
 			E('div', { 'class': 'hh4x-summary-grid' }, [
 				E('div', { 'class': 'hh4x-summary-item' }, [
 					E('span', { 'class': 'hh4x-summary-count' }, [String(countInfo.IncomingCallUsed || 0)]),
@@ -143,36 +161,61 @@ return view.extend({
 					E('span', { 'class': 'hh4x-summary-label' }, [_('Total')])
 				])
 			])
-		]);
-		body.appendChild(summaryCard);
+		]));
 
-		// ---- Call Log Table Card ----
 		if (callLog.length === 0) {
-			body.appendChild(createCard(_('Call History'), [
+			body.appendChild(hh4x.createCard(_('Call History'), [
 				E('p', { 'style': 'text-align:center;color:var(--text-color-medium);padding:2em 0;' }, [_('No call records found.')])
 			]));
 		} else {
-			let rows = [];
-			for (let call of callLog) {
-				let typeInfo = callTypeLabel(call.CallLogType);
-				let typeBadge = E('span', { 'class': 'hh4x-call-type-badge ' + typeInfo.cls }, [typeInfo.text]);
-				let dur = formatDuration(call.Duration);
+			var rows = callLog.map(function (call) {
+				var typeInfo = callTypeLabel(call.CallLogType);
+				var num = call.TelNumber || '--';
+				var matched = hh4x.resolveContact(contactMap, num);
 
-				rows.push(E('div', { 'class': 'hh4x-call-row' }, [
+				var numberNode = matched
+					? E('span', { 'class': 'hh4x-call-number', 'dir': 'auto' }, [
+						matched.name,
+						E('span', { 'class': 'hh4x-resolved-sub', 'dir': 'ltr' }, [num])
+					])
+					: E('span', { 'class': 'hh4x-call-number', 'style': 'font-family:monospace;' }, [num]);
+
+				var quickActions = [];
+				if (num !== '--' && /[0-9+]/.test(num)) {
+					quickActions.push(E('a', {
+						'class': 'cbi-button cbi-button-action hh4x-btn-sm',
+						'href': L.url('admin', 'hh4xmodem', 'sms') + '#compose=' + encodeURIComponent(num)
+					}, [_('SMS')]));
+					if (!matched) {
+						quickActions.push(E('a', {
+							'class': 'cbi-button cbi-button-neutral hh4x-btn-sm',
+							'href': L.url('admin', 'hh4xmodem', 'contacts') + '#add=' + encodeURIComponent(num)
+						}, [_('+ Contact')]));
+					}
+				}
+
+				return E('div', { 'class': 'hh4x-call-row' }, [
 					E('div', { 'class': 'hh4x-call-left' }, [
-						typeBadge,
-						E('span', { 'class': 'hh4x-call-number' }, [call.TelNumber || '--'])
+						E('span', { 'class': 'hh4x-call-type-badge ' + typeInfo.cls }, [typeInfo.text]),
+						numberNode
 					]),
 					E('div', { 'class': 'hh4x-call-right' }, [
-						E('span', { 'class': 'hh4x-call-date' }, [formatDate(call.Date)]),
-						E('span', { 'class': 'hh4x-call-duration' }, [dur])
-					])
-				]));
-			}
+						E('span', { 'class': 'hh4x-call-date' }, [call.Date || '--']),
+						E('span', { 'class': 'hh4x-call-duration' }, [hh4x.formatDuration(call.Duration)]),
+						quickActions.length ? E('div', { 'class': 'hh4x-call-actions' }, quickActions) : null
+					].filter(Boolean))
+				]);
+			});
 
-			body.appendChild(createCard(_('Call History (' + callLog.length + ')'), [
-				E('div', { 'class': 'hh4x-call-list' }, rows)
-			]));
+			var pagination = hh4x.createPagination(callViewState.page, totalPages, function (nextPage) {
+				callViewState.page = nextPage;
+				reloadCallLog();
+			});
+
+			body.appendChild(hh4x.createCard(_('Call History (%d)').format(callLog.length), [
+				E('div', { 'class': 'hh4x-call-list' }, rows),
+				pagination
+			].filter(Boolean)));
 		}
 
 		return body;

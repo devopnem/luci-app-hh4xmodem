@@ -948,3 +948,240 @@
 .hh4x-otp-copied {
 	opacity: 0.85;
 }
+
+/* ---- Modern Shared Header, Buttons, Pagination & Contact Book ---- */
+.hh4x-header-flex {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 1em;
+	flex-wrap: wrap;
+}
+
+.hh4x-header-actions {
+	display: flex;
+	gap: 0.5em;
+	flex-wrap: wrap;
+	align-items: center;
+}
+
+.hh4x-btn-sm {
+	padding: 0.25em 0.7em !important;
+	font-size: 0.82em !important;
+	line-height: 1.4 !important;
+}
+
+.hh4x-storage-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1.2em;
+	flex-wrap: wrap;
+}
+
+.hh4x-storage-bar-wrap {
+	flex: 1 1 280px;
+	min-width: 220px;
+}
+
+.hh4x-storage-meta {
+	margin-top: 0.45em;
+	font-size: 0.8em;
+	color: var(--text-color-medium);
+}
+
+.hh4x-io-actions {
+	display: flex;
+	gap: 0.45em;
+	flex-wrap: wrap;
+}
+
+.hh4x-contacts-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.8em;
+	flex-wrap: wrap;
+	padding: 0.4em 0.4em 0.8em;
+	border-bottom: 1px solid var(--border-color-low);
+}
+
+.hh4x-toolbar-left {
+	display: flex;
+	align-items: center;
+	gap: 0.7em;
+	flex-wrap: wrap;
+}
+
+.hh4x-search-input {
+	min-width: 220px;
+	max-width: 320px;
+	flex: 1 1 220px;
+}
+
+.hh4x-count-pill {
+	font-size: 0.8em;
+	padding: 0.15em 0.6em;
+	border-radius: 999px;
+	background: var(--background-color-medium);
+	color: var(--text-color-medium);
+	font-weight: 500;
+}
+
+.hh4x-contact-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.hh4x-contact-row {
+	display: flex;
+	align-items: center;
+	gap: 0.75em;
+	padding: 0.65em 0.45em;
+	border-bottom: 1px solid var(--border-color-low);
+	transition: background 0.15s ease;
+}
+
+.hh4x-contact-row:hover {
+	background: var(--background-color-medium);
+}
+
+.hh4x-contact-row:last-child {
+	border-bottom: none;
+}
+
+.hh4x-contact-avatar {
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	color: #fff;
+	font-weight: 700;
+	font-size: 0.85em;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	user-select: none;
+}
+
+.hh4x-contact-main {
+	flex: 1;
+	min-width: 0;
+}
+
+.hh4x-contact-name {
+	font-weight: 600;
+	color: var(--text-color-high);
+	font-size: 0.96em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hh4x-contact-meta {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	margin-top: 0.15em;
+	flex-wrap: wrap;
+}
+
+.hh4x-contact-number {
+	font-family: monospace;
+	font-size: 0.88em;
+	color: var(--text-color-medium);
+}
+
+.hh4x-slot-pill {
+	font-size: 0.74em;
+	font-family: monospace;
+	padding: 0.05em 0.45em;
+	border-radius: 4px;
+	background: var(--background-color-medium);
+	color: var(--text-color-medium);
+}
+
+.hh4x-contact-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.35em;
+	flex-shrink: 0;
+	flex-wrap: wrap;
+}
+
+.hh4x-field-hint {
+	font-size: 0.8em;
+	color: var(--text-color-medium);
+	margin-top: 0.25em;
+}
+
+.hh4x-hint-warn {
+	color: var(--warn-color-high);
+	font-weight: 600;
+}
+
+.hh4x-import-preview {
+	max-height: 260px;
+	overflow-y: auto;
+	border: 1px solid var(--border-color-low);
+	border-radius: 6px;
+	padding: 0.4em 0.75em;
+	margin: 0.6em 0;
+	background: var(--background-color-low);
+}
+
+.hh4x-pagination {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 1em;
+	padding: 0.9em 0 0.2em;
+	border-top: 1px solid var(--border-color-low);
+	margin-top: 0.4em;
+}
+
+.hh4x-page-indicator {
+	font-size: 0.88em;
+	color: var(--text-color-medium);
+	font-weight: 500;
+}
+
+.hh4x-resolved-sub {
+	font-weight: 400;
+	font-size: 0.85em;
+	color: var(--text-color-medium);
+	font-family: monospace;
+	margin-left: 0.4em;
+}
+
+.hh4x-sms-storage-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	font-size: 0.82em;
+	padding: 0.25em 0.7em;
+	border-radius: 999px;
+	background: var(--background-color-medium);
+	color: var(--text-color-medium);
+}
+
+.hh4x-call-actions {
+	display: flex;
+	gap: 0.35em;
+	flex-shrink: 0;
+}
+
+@media (max-width: 680px) {
+	.hh4x-contact-row {
+		flex-wrap: wrap;
+	}
+	.hh4x-contact-actions {
+		width: 100%;
+		justify-content: flex-end;
+		padding-left: 2.2em;
+	}
+	.hh4x-search-input {
+		max-width: 100%;
+		width: 100%;
+	}
+}

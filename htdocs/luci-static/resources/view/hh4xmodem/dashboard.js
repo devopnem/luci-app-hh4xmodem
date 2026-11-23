@@ -10,14 +10,9 @@
 'require ui';
 'require poll';
 'require uci';
+'require hh4xmodem.common as hh4x';
 
-if (!document.querySelector('link[href*="hh4xmodem.css"]')) {
-	document.querySelector('head').appendChild(E('link', {
-		'rel': 'stylesheet',
-		'type': 'text/css',
-		'href': L.resource('view/hh4xmodem/hh4xmodem.css') + '?_=' + Date.now()
-	}));
-}
+hh4x.ensureCss();
 
 const callAllFull = rpc.declare({
 	object: 'hh4xmodem',
@@ -27,6 +22,11 @@ const callAllFull = rpc.declare({
 const callAll = rpc.declare({
 	object: 'hh4xmodem',
 	method: 'get_all'
+});
+
+const callPoll = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'get_poll'
 });
 
 const callSetUpnp = rpc.declare({
@@ -696,10 +696,12 @@ function createSparklinePanel(signal, radioOk) {
 
 function startPolling(interval) {
 	poll.add(function() {
-		return callAll().then(function(d) {
+		if (document.hidden) return Promise.resolve();
+		return callPoll().then(function(d) {
 			var signal = d.GetNetworkInfo || {};
 			var conn = d.GetConnectionState || {};
 			var sim = d.GetSimStatus || {};
+			var usage = d.GetUsageRecord || {};
 			var radioOk = (sim.SIMState == null || parseInt(sim.SIMState) === 7);
 			var grid = document.querySelector('.hh4x-signal-grid');
 			if (!grid) return;
@@ -743,18 +745,16 @@ function startPolling(interval) {
 					if (i < sv.length) updateInfoValue(row, sv[i]);
 				});
 			}
-			var cards = document.querySelectorAll('.hh4x-card');
-			for (var ci = 0; ci < cards.length; ci++) {
-				var t = cards[ci].querySelector('.hh4x-card-title');
-				if (t && t.textContent === 'Connection') {
-					var r = cards[ci].querySelectorAll('.hh4x-info-row');
-					if (r.length >= 6) {
-						updateInfoValue(r[3], formatSpeed(conn.Speed_Dl));
-						updateInfoValue(r[4], formatSpeed(conn.Speed_Ul));
-					}
-					break;
-				}
-			}
+			updateInfoValue(document.getElementById('hh4x-conn-ip'), conn.IPv4Adrress || '--');
+			updateInfoValue(document.getElementById('hh4x-conn-dl'), formatSpeed(conn.Speed_Dl));
+			updateInfoValue(document.getElementById('hh4x-conn-ul'), formatSpeed(conn.Speed_Ul));
+			updateInfoValue(document.getElementById('hh4x-conn-time'), formatDuration(conn.ConnectionTime));
+			updateInfoValue(document.getElementById('hh4x-sess-time'), formatDuration(conn.ConnectionTime));
+			updateInfoValue(document.getElementById('hh4x-sess-dl'), formatBytes(conn.DlBytes || 0));
+			updateInfoValue(document.getElementById('hh4x-sess-ul'), formatBytes(conn.UlBytes || 0));
+			updateInfoValue(document.getElementById('hh4x-sess-total'), formatBytes((conn.DlBytes || 0) + (conn.UlBytes || 0)));
+			updateInfoValue(document.getElementById('hh4x-sess-spd-dl'), formatSpeed(conn.Speed_Dl));
+			updateInfoValue(document.getElementById('hh4x-sess-spd-ul'), formatSpeed(conn.Speed_Ul));
 		}).catch(function() {
 			/* Modem temporarily unreachable — swallow silently.
 			   LuCI's poll.step already catches rejections, but we
@@ -1017,10 +1017,10 @@ function renderStatusTab(ctx) {
 				]),
 				createInfoRow('Network', networkTypeLabel(status.NetworkType || signal.NetworkType)),
 				createInfoRow('Network Name', status.NetworkName || signal.NetworkName || '--'),
-				createInfoRow('IP Address', conn.IPv4Adrress || '--'),
-				createInfoRow('Download Speed', formatSpeed(conn.Speed_Dl)),
-				createInfoRow('Upload Speed', formatSpeed(conn.Speed_Ul)),
-				createInfoRow('Connection Time', formatDuration(conn.ConnectionTime)),
+				createInfoRow('IP Address', conn.IPv4Adrress || '--', null, 'hh4x-conn-ip'),
+				createInfoRow('Download Speed', formatSpeed(conn.Speed_Dl), null, 'hh4x-conn-dl'),
+				createInfoRow('Upload Speed', formatSpeed(conn.Speed_Ul), null, 'hh4x-conn-ul'),
+				createInfoRow('Connection Time', formatDuration(conn.ConnectionTime), null, 'hh4x-conn-time'),
 				// The roaming flag lives in GetNetworkInfo, NOT GetConnectionState:
 				// the connection response has no roaming field whatsoever, so
 				// reading it from there left the value undefined and this row
@@ -1586,12 +1586,12 @@ function renderUsageTab(ctx) {
 				])
 			])),
 			createCard(_('Current Session'), [
-				createInfoRow(_('Connection Time'), formatDuration(connTime)),
-				createInfoRow(_('Session Download'), formatBytes(dlBytes)),
-				createInfoRow(_('Session Upload'), formatBytes(ulBytes)),
-				createInfoRow(_('Total'), formatBytes(dlBytes + ulBytes)),
-				createInfoRow(_('Download Speed'), formatSpeed(conn.Speed_Dl)),
-				createInfoRow(_('Upload Speed'), formatSpeed(conn.Speed_Ul))
+				createInfoRow(_('Connection Time'), formatDuration(connTime), null, 'hh4x-sess-time'),
+				createInfoRow(_('Session Download'), formatBytes(dlBytes), null, 'hh4x-sess-dl'),
+				createInfoRow(_('Session Upload'), formatBytes(ulBytes), null, 'hh4x-sess-ul'),
+				createInfoRow(_('Total'), formatBytes(dlBytes + ulBytes), null, 'hh4x-sess-total'),
+				createInfoRow(_('Download Speed'), formatSpeed(conn.Speed_Dl), null, 'hh4x-sess-spd-dl'),
+				createInfoRow(_('Upload Speed'), formatSpeed(conn.Speed_Ul), null, 'hh4x-sess-spd-ul')
 			])
 		]),
 		E('div', { 'class': 'hh4x-row' }, [
@@ -2046,12 +2046,12 @@ return view.extend({
 			statusTab, networkTab, natTab, usageTab, infoTab
 		]);
 
-		setTimeout(function () {
+		requestAnimationFrame(function () {
 			try {
 				ui.tabs.initTabGroup(paneContainer.childNodes);
 			} catch (e) {}
 			startPolling(refreshInterval);
-		}, 200);
+		});
 
 		return E('div', { 'class': 'hh4x-page' }, [ paneContainer ]);
 	}
