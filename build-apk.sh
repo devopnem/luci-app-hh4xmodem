@@ -23,7 +23,7 @@ APK="$IB/staging_dir/host/bin/apk"
 
 PKGNAME="luci-app-hh4xmodem"
 # Keep in step with PKG_RELEASE in the Makefile.
-PKGVER="${PKGVER:-1.2.0-r1}"
+PKGVER="${PKGVER:-1.2.0-r2}"
 
 # 1) Build the package root from the source tree (htdocs -> /www, root -> /)
 WORK="$(mktemp -d)"
@@ -45,7 +45,7 @@ OUT="$WORK/$PKGNAME-$PKGVER.apk"   # <-- NO arch, NO underscore before version
   --info version:"$PKGVER" \
   --info arch:noarch \
   --info license:Apache-2.0 \
-  --info "depends:luci-base ucode-mod-socket sms-tool"
+  --info "depends:luci-base ucode-mod-socket"
 
 # NOTE: all dependencies go in ONE space-separated --info value. Repeating
 # --info depends:X --info depends:Y silently keeps only the LAST one, which

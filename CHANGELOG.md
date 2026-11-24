@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0-r2] — 2026-11-24
+
+### Fixed
+- **IMEI reading via native pack protocol.** `hh4xmodem-nv` now reads the live
+  modem IMEI directly via the native pack protocol (`GetSystemInfo` over TCP 2016)
+  instead of executing `AT+GSN` via `sms_tool` over `/dev/ttyUSB2`. This removes
+  the dependency on `sms-tool` and serial port access, eliminating the
+  "unavailable" status on systems without `sms_tool`.
+- Removed `sms-tool` dependency requirement from build scripts.
+
 ## [1.2.0-r1] — 2026-11-19
 
 ### Added

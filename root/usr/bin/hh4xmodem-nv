@@ -33,9 +33,8 @@
  */
 
 import { popen, stat, open } from 'fs';
+import * as pack from 'hh4xmodem.pack';
 
-const AT_PORT       = getenv('AT_PORT') || '/dev/ttyUSB2';
-const SMS_TOOL      = '/usr/bin/sms_tool';
 const DIAG_HELPER   = getenv('DIAG_HELPER') || '/usr/bin/hh4xmodem-diag';
 const MODEM_IP      = getenv('MODEM_IP') || '192.168.225.1';
 const MODEM_PASS    = getenv('MODEM_PASS') || 'oelinux123';
@@ -55,9 +54,9 @@ const UPDATE_BACKUP = '/cache/backup_conf/update_backup.bin';
 const RESET_FLAG    = '/cache/backup_conf/reset_flag';
 
 /* How many readable IMEI reads after boot may disagree with the target
- * before the change is declared failed.  The modem answers AT+GSN slightly
- * before core_app finishes the NV restore, so a single early mismatch is
- * expected and must not fail the operation. */
+ * before the change is declared failed.  The modem core_app starts the pack
+ * service around the time it finishes the NV restore, so a single early
+ * mismatch is expected and must not fail the operation. */
 const MAX_CHECKS    = 6;
 
 /* ---------------------------------------------------------------- helpers */
@@ -168,35 +167,27 @@ function decode_nv550(payload) {
 
 /* ------------------------------------------------------- modem plumbing */
 
-function ensure_usb_serial() {
-	if (stat(AT_PORT)) return;
-	system('echo "1bbb 0196" > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || ' +
-	       'echo "1bbb 0196" > /sys/bus/usb-serial/drivers/option/new_id 2>/dev/null');
-	sleep(500);
-}
-
-function at_cmd(cmd) {
-	ensure_usb_serial();
-	if (!stat(SMS_TOOL)) return '';
-
-	let fd = popen(sprintf('%s -d %s at %s 2>/dev/null', SMS_TOOL, shq(AT_PORT), shq(cmd)));
-	if (!fd) return '';
-	let out = '';
-	let line;
-	while ((line = fd.read('line')) != null) out += trim(line) + '\n';
-	fd.close();
-	return trim(out);
-}
-
 function read_live_imei() {
-	if (stat(AT_PORT) == null) ensure_usb_serial();
-	let out = at_cmd('AT+GSN');
-	for (let line in split(out, '\n')) {
-		line = trim(line);
-		if (match(line, /^[0-9]{15}$/))
-			return { ok: true, imei: line };
+	let info = null;
+	try {
+		info = pack.call('GetSystemInfo', '{}', { ip: MODEM_IP });
+	} catch (e) {
+		return { ok: false, error: 'Cannot query modem system info: ' + e };
 	}
-	return { ok: false, error: 'The modem did not answer AT+GSN', raw: out };
+
+	if (type(info) != 'object')
+		return { ok: false, error: 'Invalid response from modem pack service' };
+
+	if (info.error != null)
+		return { ok: false, error: 'Modem pack error: ' + (info.error.message || info.error) };
+
+	let imei = (info.result && info.result.IMEI) ? info.result.IMEI : info.IMEI;
+	if (imei != null) imei = trim(imei);
+
+	if (imei && match(imei, /^[0-9]{15}$/))
+		return { ok: true, imei: imei };
+
+	return { ok: false, error: 'The modem did not return a valid IMEI', raw: info };
 }
 
 function modem_exec(remote) {
