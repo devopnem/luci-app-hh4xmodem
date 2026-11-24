@@ -19,9 +19,14 @@
 'require rpc';
 'require ui';
 'require view';
-'require hh4xmodem.common as hh4x';
 
-hh4x.ensureCss();
+if (!document.querySelector('link[href*="hh4xmodem.css"]')) {
+	document.querySelector('head').appendChild(E('link', {
+		'rel': 'stylesheet',
+		'type': 'text/css',
+		'href': L.resource('view/hh4xmodem/hh4xmodem.css') + '?_=' + Date.now()
+	}));
+}
 
 const callGetImei = rpc.declare({
 	object: 'hh4xmodem',

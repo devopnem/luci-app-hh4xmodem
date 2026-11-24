@@ -37,18 +37,9 @@
 		}
 	},
 
-	"admin/hh4xmodem/contacts": {
-		"title": "Contacts",
-		"order": 4,
-		"action": {
-			"type": "view",
-			"path": "hh4xmodem/contacts"
-		}
-	},
-
 	"admin/hh4xmodem/ussd": {
 		"title": "USSD",
-		"order": 5,
+		"order": 4,
 		"action": {
 			"type": "view",
 			"path": "hh4xmodem/ussd"
@@ -57,7 +48,7 @@
 
 	"admin/hh4xmodem/imei": {
 		"title": "IMEI",
-		"order": 6,
+		"order": 5,
 		"action": {
 			"type": "view",
 			"path": "hh4xmodem/imei"

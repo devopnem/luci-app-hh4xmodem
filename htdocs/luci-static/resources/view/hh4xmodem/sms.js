@@ -8,19 +8,24 @@
 'require rpc';
 'require view';
 'require ui';
-'require hh4xmodem.common as hh4x';
 
-hh4x.ensureCss();
+if (!document.querySelector('link[href*="hh4xmodem.css"]')) {
+	document.querySelector('head').appendChild(E('link', {
+		'rel': 'stylesheet',
+		'type': 'text/css',
+		'href': L.resource('view/hh4xmodem/hh4xmodem.css') + '?_=' + Date.now()
+	}));
+}
 
 const callSMSData = rpc.declare({
 	object: 'hh4xmodem',
-	method: 'get_sms_data',
+	method: 'get_sms_list',
 	params: { key: 'inbox', page: 1 }
 });
 
-const callContactsCached = rpc.declare({
+const callSimStatus = rpc.declare({
 	object: 'hh4xmodem',
-	method: 'get_contacts_cached'
+	method: 'get_sim_status'
 });
 
 const callSendSMS = rpc.declare({
@@ -28,6 +33,12 @@ const callSendSMS = rpc.declare({
 	method: 'send_sms',
 	params: { phone: '', content: '' },
 	reject: true
+});
+
+const callSingleSMS = rpc.declare({
+	object: 'hh4xmodem',
+	method: 'get_single_sms',
+	params: { id: null }
 });
 
 const callDeleteSMS = rpc.declare({
@@ -43,6 +54,32 @@ const callDeleteSMSBulk = rpc.declare({
 	params: { ids: [] },
 	reject: true
 });
+
+// Sending needs a usable SIM. Without one the modem's SMS store is
+// unreachable and SendSMS fails with the misleading "Fail with store space
+// full" (060603) rather than "no SIM". Check up front and say the real thing.
+// SIM state 7 = Ready. Returns a reason string, or null when the SIM is usable.
+// An unknown state (null — SIM read failed) is also usable: the backend
+// re-checks before sending, so a transport hiccup must not block compose.
+function simBlockReason(sim) {
+	var state = (sim && sim.SIMState != null) ? parseInt(sim.SIMState) : null;
+	if (state == null || state == 7) return null;
+	if (state == 0) return _('No SIM is inserted. Insert a SIM to send messages.');
+	if (state == 1) return _('The SIM is not ready yet. Wait a moment and try again.');
+	if (state == 2) return _('The SIM is locked. Enter your PIN first, then send messages.');
+	if (state == 3) return _('The SIM is locked. Enter your PUK first, then send messages.');
+	if (state == 4) return _('The SIM is network-locked (NCK required).');
+	if (state == 5) return _('The PUK is blocked.');
+	if (state == 6) return _('The SIM is invalid.');
+	if (state == 11) return _('The SIM is initialising. Wait a moment and try again.');
+	return _('The modem did not report a usable SIM state.');
+}
+
+function formatDate(dateStr) {
+	if (!dateStr) return '--';
+	return dateStr;
+}
+
 
 // Extract a likely 4-8 digit OTP / verification code from an SMS body.
 // Prioritizes codes near OTP keywords (EN/FR/AR) and skips phone numbers or dates.
@@ -66,20 +103,38 @@ function extractOtp(text) {
 	return null;
 }
 
-function smsSegmentStats(text) {
-	var s = text || '';
-	var len = s.length;
-	var isGsm7 = /^[\x0A\x0D\x20-\x7E£¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ¤¡ÄÖÑÜ§¿äöñüà]*$/.test(s);
-	var singleMax = isGsm7 ? 160 : 70;
-	var multiMax = isGsm7 ? 153 : 67;
-	var segments = len === 0 ? 0 : (len <= singleMax ? 1 : Math.ceil(len / multiMax));
-	var limit = segments <= 1 ? singleMax : segments * multiMax;
-	return {
-		len: len,
-		segments: segments,
-		limit: limit,
-		encoding: isGsm7 ? 'GSM-7' : 'UCS-2'
+// Works over both HTTPS (Clipboard API) and plain HTTP LuCI (execCommand fallback).
+function copyToClipboard(text, btn, idleLabel) {
+	var done = function () {
+		if (!btn) return;
+		btn.textContent = _('✓ Copied');
+		btn.classList.add('hh4x-otp-copied');
+		setTimeout(function () {
+			btn.textContent = idleLabel;
+			btn.classList.remove('hh4x-otp-copied');
+		}, 1500);
 	};
+	var fallback = function () {
+		var ta = document.createElement('textarea');
+		ta.value = text;
+		ta.setAttribute('readonly', '');
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		document.body.appendChild(ta);
+		ta.select();
+		try {
+			document.execCommand('copy');
+			done();
+		} catch (e) {
+			ui.addNotification(null, E('p', [_('Copy failed. Code: ') + text]), 'info');
+		}
+		document.body.removeChild(ta);
+	};
+	if (navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(text).then(done).catch(fallback);
+	} else {
+		fallback();
+	}
 }
 
 function truncate(str, len) {
@@ -88,67 +143,89 @@ function truncate(str, len) {
 	return str.substring(0, len) + '...';
 }
 
-var currentView = null;
-var smsViewState = { key: 'inbox', page: 1 };
-var currentSim = null;
-var contactList = [];
-var contactMap = { exact: {}, suffix: {} };
+function createCard(title, content) {
+	return E('div', { 'class': 'cbi-section hh4x-card' }, [
+		E('div', { 'class': 'hh4x-card-header' }, [
+			E('h3', { 'class': 'hh4x-card-title' }, [title])
+		]),
+		E('div', { 'class': 'hh4x-card-body' }, content)
+	]);
+}
 
-var smsTabs = [
-	{ key: 'inbox', label: _('Inbox') },
-	{ key: 'send', label: _('Sent') }
-];
+function createInfoRow(label, value) {
+	return E('div', { 'class': 'hh4x-info-row' }, [
+		E('span', { 'class': 'hh4x-info-label' }, [label]),
+		E('span', { 'class': 'hh4x-info-value' }, [value != null ? String(value) : '--'])
+	]);
+}
+
+function createModalOverlay() {
+	let overlay = E('div', { 'class': 'hh4x-modal-overlay', 'style': 'display:none;' });
+	let modal = E('div', { 'class': 'hh4x-modal' }, [
+		E('div', { 'class': 'hh4x-modal-header' }, [
+			E('span', { 'class': 'hh4x-modal-title' }),
+			E('button', {
+				'class': 'hh4x-modal-close cbi-button',
+				'click': function () { overlay.style.display = 'none'; }
+			}, [_('Close')])
+		]),
+		E('div', { 'class': 'hh4x-modal-body' })
+	]);
+	overlay.appendChild(modal);
+	overlay.addEventListener('click', function (e) {
+		if (e.target === overlay) overlay.style.display = 'none';
+	});
+	return overlay;
+}
+
+let currentView = null;
 
 function reloadSMSList() {
-	if (!currentView) return;
-	currentView.load().then(function (newData) {
-		var newBody = currentView.render(newData);
-		var container = document.querySelector('.hh4x-page');
-		if (container && container.parentNode) {
-			container.parentNode.replaceChild(newBody, container);
-		}
-	}).catch(function (err) {
-		ui.addNotification(null, E('p', [_('Error loading SMS list: ') + String(err)]), 'error');
-	});
+	if (currentView) {
+		currentView.load().then(function (newData) {
+			let newBody = currentView.render(newData);
+			let container = document.querySelector('.hh4x-page');
+			if (container && container.parentNode) {
+				container.parentNode.replaceChild(newBody, container);
+			}
+		}).catch(function (err) {
+			ui.addNotification(null, E('p', [_('Error loading SMS list: ') + String(err)]), 'error');
+		});
+	}
 }
 
 function showSMSModal(sms) {
-	var overlay = document.getElementById('hh4x-sms-modal');
+	let overlay = document.getElementById('hh4x-sms-modal');
 	if (!overlay) {
-		overlay = hh4x.createModalOverlay('hh4x-sms-modal');
+		overlay = createModalOverlay();
+		overlay.id = 'hh4x-sms-modal';
 		document.body.appendChild(overlay);
 	}
 
-	var sender = Array.isArray(sms.PhoneNumber) ? sms.PhoneNumber[0] : (sms.PhoneNumber || '--');
-	var matched = hh4x.resolveContact(contactMap, sender);
-	var displayTitle = matched ? (matched.name + ' (' + sender + ')') : sender;
-	var content = sms.SMSContent || _('(No content)');
+	let sender = Array.isArray(sms.PhoneNumber) ? sms.PhoneNumber[0] : (sms.PhoneNumber || '--');
+	let content = sms.SMSContent || _('(No content)');
 
-	overlay.querySelector('.hh4x-modal-title').textContent = displayTitle;
-	var body = overlay.querySelector('.hh4x-modal-body');
-	body.innerHTML = '';
+	overlay.querySelector('.hh4x-modal-title').textContent = sender;
+	overlay.querySelector('.hh4x-modal-body').innerHTML = '';
 
+	let body = overlay.querySelector('.hh4x-modal-body');
 	body.appendChild(E('div', { 'class': 'hh4x-modal-meta' }, [
-		matched ? E('div', { 'class': 'hh4x-modal-info' }, [
-			E('span', { 'class': 'hh4x-modal-label' }, [_('Contact: ')]),
-			E('span', { 'class': 'hh4x-modal-value', 'dir': 'auto' }, [matched.name])
-		]) : null,
 		E('div', { 'class': 'hh4x-modal-info' }, [
 			E('span', { 'class': 'hh4x-modal-label' }, [_('Number: ')]),
-			E('span', { 'class': 'hh4x-modal-value', 'style': 'font-family:monospace;' }, [sender])
+			E('span', { 'class': 'hh4x-modal-value' }, [sender])
 		]),
 		E('div', { 'class': 'hh4x-modal-info' }, [
 			E('span', { 'class': 'hh4x-modal-label' }, [_('Date: ')]),
-			E('span', { 'class': 'hh4x-modal-value' }, [sms.SMSTime || '--'])
+			E('span', { 'class': 'hh4x-modal-value' }, [formatDate(sms.SMSTime)])
 		]),
 		E('div', { 'class': 'hh4x-modal-info' }, [
 			E('span', { 'class': 'hh4x-modal-label' }, [_('ID: ')]),
 			E('span', { 'class': 'hh4x-modal-value' }, [String(sms.SMSId)])
 		])
-	].filter(Boolean)));
-	body.appendChild(E('div', { 'class': 'hh4x-modal-content', 'dir': 'auto' }, [content]));
+	]));
+	body.appendChild(E('div', { 'class': 'hh4x-modal-content' }, [content]));
 
-	var deleteBtn = E('button', {
+	let deleteBtn = E('button', {
 		'class': 'cbi-button cbi-button-negative hh4x-delete-btn',
 		'click': function (e) {
 			e.stopPropagation();
@@ -172,114 +249,70 @@ function showSMSModal(sms) {
 		}
 	}, [_('Delete')]);
 
-	var modalActions = [];
-	var modalOtp = extractOtp(sms.SMSContent || '');
+	let modalActions = [];
+	let modalOtp = extractOtp(sms.SMSContent || '');
 	if (modalOtp) {
-		var otpLabel = _('Copy OTP: ') + modalOtp;
-		var copyBtn = E('button', {
+		let otpLabel = _('Copy OTP: ') + modalOtp;
+		let copyBtn = E('button', {
 			'class': 'cbi-button cbi-button-action hh4x-otp-btn',
 			'click': function (e) {
 				e.stopPropagation();
-				hh4x.copyToClipboard(modalOtp, copyBtn, otpLabel);
+				copyToClipboard(modalOtp, copyBtn, otpLabel);
 			}
 		}, [otpLabel]);
 		modalActions.push(copyBtn);
 	}
-	if (sender && sender !== '--' && /[0-9+]/.test(sender)) {
-		modalActions.push(E('button', {
-			'class': 'cbi-button cbi-button-action',
-			'click': function (e) {
-				e.stopPropagation();
-				overlay.style.display = 'none';
-				showComposeModal(sender);
-			}
-		}, [_('Reply')]));
-		if (!matched) {
-			modalActions.push(E('a', {
-				'class': 'cbi-button cbi-button-neutral',
-				'href': L.url('admin', 'hh4xmodem', 'contacts') + '#add=' + encodeURIComponent(sender)
-			}, [_('Save Contact')]));
-		}
-	}
 	modalActions.push(deleteBtn);
 
 	body.appendChild(E('div', { 'class': 'hh4x-modal-actions' }, modalActions));
+
 	overlay.style.display = 'flex';
 }
 
-function showComposeModal(prefillPhone) {
-	var overlay = document.getElementById('hh4x-compose-modal');
+function showComposeModal() {
+	let overlay = document.getElementById('hh4x-compose-modal');
 	if (!overlay) {
-		overlay = hh4x.createModalOverlay('hh4x-compose-modal');
+		overlay = createModalOverlay();
+		overlay.id = 'hh4x-compose-modal';
 		document.body.appendChild(overlay);
 	}
 
 	overlay.querySelector('.hh4x-modal-title').textContent = _('Compose SMS');
-	var body = overlay.querySelector('.hh4x-modal-body');
-	body.innerHTML = '';
+	overlay.querySelector('.hh4x-modal-body').innerHTML = '';
 
-	var phoneInput = E('input', {
-		'type': 'tel',
+	let body = overlay.querySelector('.hh4x-modal-body');
+	let phoneInput = E('input', {
+		'type': 'text',
 		'class': 'cbi-input-text',
 		'placeholder': _('Phone number'),
-		'value': prefillPhone || '',
-		'style': 'width:100%;box-sizing:border-box;margin-bottom:8px;font-family:monospace;',
+		'style': 'width:100%;box-sizing:border-box;margin-bottom:8px;',
 		'id': 'compose-phone'
 	});
-
-	if (contactList.length > 0) {
-		var picker = E('select', {
-			'class': 'cbi-input-select',
-			'style': 'width:100%;box-sizing:border-box;margin-bottom:8px;',
-			'change': function (e) {
-				if (e.target.value) phoneInput.value = e.target.value;
-			}
-		}, [E('option', { 'value': '' }, [_('— Pick from SIM Contacts —')])].concat(
-			contactList.map(function (c) {
-				return E('option', { 'value': c.number }, [c.name + ' (' + c.number + ')']);
-			})
-		));
-		body.appendChild(picker);
-	}
-
-	var counterEl = E('div', { 'class': 'hh4x-field-hint', 'style': 'margin-bottom:8px;' }, [
-		'0 / 160 (GSM-7 · 0 SMS)'
-	]);
-
-	var msgInput = E('textarea', {
+	let msgInput = E('textarea', {
 		'class': 'cbi-input-text',
 		'placeholder': _('Message'),
-		'dir': 'auto',
-		'style': 'width:100%;box-sizing:border-box;min-height:110px;resize:vertical;',
-		'id': 'compose-msg',
-		'input': function (e) {
-			var st = smsSegmentStats(e.target.value);
-			counterEl.textContent = _('%d / %d (%s · %d SMS)').format(
-				st.len, st.limit, st.encoding, st.segments
-			);
-		}
+		'style': 'width:100%;box-sizing:border-box;min-height:100px;resize:vertical;margin-bottom:8px;',
+		'id': 'compose-msg'
 	});
-
-	var sendBtn = E('button', {
+	let sendBtn = E('button', {
 		'class': 'cbi-button cbi-button-action',
 		'id': 'compose-send-btn',
 		'style': 'width:100%;',
 		'click': function () {
-			var blocked = hh4x.simBlockReason(currentSim, _('to send messages'));
+			let blocked = simBlockReason(currentSim);
 			if (blocked) {
 				ui.addNotification(null, E('p', [blocked]), 'error');
 				return;
 			}
-			var phone = phoneInput.value.trim();
-			var msg = msgInput.value.trim();
-			if (!phone) { ui.addNotification(null, E('p', [_('Enter a phone number.')]), 'info'); phoneInput.focus(); return; }
-			if (!msg) { ui.addNotification(null, E('p', [_('Enter a message.')]), 'info'); msgInput.focus(); return; }
+			let phone = document.getElementById('compose-phone').value.trim();
+			let msg = document.getElementById('compose-msg').value.trim();
+			if (!phone) { ui.addNotification(null, E('p', [_('Enter a phone number.')]), 'info'); return; }
+			if (!msg) { ui.addNotification(null, E('p', [_('Enter a message.')]), 'info'); return; }
 			sendBtn.disabled = true;
 			sendBtn.textContent = _('Sending...');
 			callSendSMS({ phone: phone, content: msg }).then(function (result) {
 				if (result && typeof result === 'object' && result.error == null) {
 					overlay.style.display = 'none';
-					ui.addNotification(null, E('p', [_('SMS sent to %s.').format(phone)]), 'info');
 					reloadSMSList();
 				} else {
 					ui.addNotification(null, E('p', [_('Send failed: ') + (result?.error || _('Unknown error'))]), 'error');
@@ -296,12 +329,19 @@ function showComposeModal(prefillPhone) {
 
 	body.appendChild(phoneInput);
 	body.appendChild(msgInput);
-	body.appendChild(counterEl);
 	body.appendChild(sendBtn);
 
 	overlay.style.display = 'flex';
-	(prefillPhone ? msgInput : phoneInput).focus();
+	document.getElementById('compose-phone').focus();
 }
+
+let smsViewState = { key: 'inbox', page: 1 };
+let currentSim = null;
+
+let smsTabs = [
+	{ key: 'inbox', label: _('Inbox') },
+	{ key: 'send', label: _('Sent') }
+];
 
 return view.extend({
 	handleSave: null,
@@ -309,31 +349,29 @@ return view.extend({
 	handleReset: null,
 
 	load: function () {
+		// A failed SIM read must not block the list; the backend re-checks
+		// before it actually sends, and Compose stays enabled so the user is
+		// never locked out by a transport hiccup.
 		return Promise.all([
 			callSMSData({ key: smsViewState.key, page: smsViewState.page }),
-			callContactsCached().catch(function () { return null; })
+			callSimStatus().catch(function () { return null; })
 		]).then(function (res) {
-			var smsBundle = res[0] || {};
-			var cData = res[1] || {};
-			currentSim = smsBundle.GetSimStatus || null;
-			contactList = Array.isArray(cData.contacts) ? cData.contacts : [];
-			contactMap = hh4x.buildContactMap(contactList);
-			return smsBundle;
+			currentSim = res[1] || null;
+			return res[0];
 		});
 	},
 
-	render: function (bundle) {
+	render: function (data) {
 		currentView = this;
-		var smsResult = (bundle && bundle.GetSMSListByContactNum) || {};
-		var storage = (bundle && bundle.GetSMSStorageState) || {};
-		var smsList = smsResult.SMSList || [];
-		var totalPages = parseInt(smsResult.TotalPageCount, 10) || 1;
+		let smsResult = data || {};
+		let smsList = smsResult.SMSList || [];
+		let totalPages = smsResult.TotalPageCount || 1;
 
-		var currentKey = smsViewState.key;
-		var currentTab = smsTabs.find(function (t) { return t.key === currentKey; }) || smsTabs[0];
-		var tabTitle = currentTab ? currentTab.label : _('SMS');
+		let currentKey = smsViewState.key;
+		let currentTab = smsTabs.find(function (t) { return t.key === currentKey; }) || smsTabs[0];
+		let tabTitle = currentTab ? currentTab.label : _('SMS');
 
-		var tabBar = E('div', { 'class': 'hh4x-sms-tabs' },
+		let tabBar = E('div', { 'class': 'hh4x-sms-tabs' },
 			smsTabs.map(function (t) {
 				return E('button', {
 					'class': 'hh4x-sms-tab cbi-button' + (t.key === currentKey ? ' hh4x-sms-tab-active cbi-button-action' : ' cbi-button-neutral'),
@@ -348,38 +386,24 @@ return view.extend({
 			})
 		);
 
-		var storageText = '';
-		if (storage.TUseCount != null && storage.MaxCount != null) {
-			storageText = _('Storage: %d / %d').format(storage.TUseCount, storage.MaxCount);
-		} else if (storage.SimUsed != null && storage.SimMax != null) {
-			storageText = _('SIM: %d / %d').format(storage.SimUsed, storage.SimMax);
-		}
-
-		var simBlocked = hh4x.simBlockReason(currentSim, _('to send messages'));
-
-		var body = E('div', { 'class': 'hh4x-page' }, [
-			E('div', { 'class': 'hh4x-page-header hh4x-header-flex' }, [
-				E('div', {}, [
-					tabBar,
-					E('h2', { 'class': 'hh4x-page-title' }, [_('SMS - ' + tabTitle)]),
-					E('p', { 'class': 'hh4x-page-desc' }, [
-						currentKey === 'inbox' ? _('View received SMS messages.') : _('View sent SMS messages.')
-					])
+		let body = E('div', { 'class': 'hh4x-page' }, [
+			E('div', { 'class': 'hh4x-page-header' }, [
+				tabBar,
+				E('h2', { 'class': 'hh4x-page-title' }, [_('SMS - ' + tabTitle)]),
+				E('p', { 'class': 'hh4x-page-desc' }, [
+					currentKey === 'inbox' ? _('View received SMS messages.') : _('View sent SMS messages.')
 				]),
-				E('div', { 'class': 'hh4x-header-actions' }, [
-					storageText ? E('span', { 'class': 'hh4x-sms-storage-pill' }, [storageText]) : null,
-					E('button', {
-						'class': 'cbi-button cbi-button-action',
-						'disabled': simBlocked ? true : undefined,
-						'click': function () { showComposeModal(''); }
-					}, [_('+ Compose')]),
-					E('button', {
-						'class': 'cbi-button cbi-button-neutral',
-						'click': function () { reloadSMSList(); }
-					}, [_('Refresh')])
-				].filter(Boolean))
 			])
 		]);
+
+		let simBlocked = simBlockReason(currentSim);
+		let composeBtn = E('button', {
+			'class': 'cbi-button cbi-button-action',
+			'style': 'margin-bottom:16px;',
+			'disabled': simBlocked ? true : undefined,
+			'click': function () { showComposeModal(); }
+		}, [_('Compose')]);
+		body.appendChild(composeBtn);
 
 		if (simBlocked) {
 			body.appendChild(E('div', { 'class': 'hh4x-warning', 'style': 'margin-bottom:16px;' }, [
@@ -388,29 +412,29 @@ return view.extend({
 			]));
 		}
 
-		var toolbar = E('div', { 'class': 'hh4x-sms-toolbar' }, [
+		let toolbar = E('div', { 'class': 'hh4x-sms-toolbar' }, [
 			E('label', { 'class': 'hh4x-sms-toolbar-label' }, [
 				E('input', {
 					'type': 'checkbox',
 					'id': 'select-all-check',
 					'change': function (e) {
-						var cbs = document.querySelectorAll('.hh4x-sms-check');
-						for (var j = 0; j < cbs.length; j++) cbs[j].checked = e.target.checked;
+						let cbs = document.querySelectorAll('.hh4x-sms-check');
+						for (let j = 0; j < cbs.length; j++) cbs[j].checked = e.target.checked;
 					}
 				}),
 				_(' Select All')
 			]),
 			E('button', {
-				'class': 'cbi-button cbi-button-negative hh4x-btn-sm',
+				'class': 'cbi-button cbi-button-negative',
 				'id': 'delete-selected-btn',
 				'click': function (e) {
 					e.stopPropagation();
-					var checked = [];
-					var cbs = document.querySelectorAll('.hh4x-sms-check:checked');
-					for (var j = 0; j < cbs.length; j++) checked.push(parseInt(cbs[j].value, 10));
+					let checked = [];
+					let cbs = document.querySelectorAll('.hh4x-sms-check:checked');
+					for (let j = 0; j < cbs.length; j++) checked.push(parseInt(cbs[j].value));
 					if (checked.length === 0) { ui.addNotification(null, E('p', [_('No messages selected.')]), 'info'); return; }
-					if (!confirm(_('Delete %d selected message(s)?').format(checked.length))) return;
-					var btn = document.getElementById('delete-selected-btn');
+					if (!confirm(_('Delete ' + checked.length + ' selected message(s)?'))) return;
+					let btn = document.getElementById('delete-selected-btn');
 					btn.disabled = true;
 					btn.textContent = _('Deleting...');
 					callDeleteSMSBulk({ ids: checked }).then(function (result) {
@@ -431,50 +455,45 @@ return view.extend({
 		]);
 
 		if (smsList.length === 0) {
-			body.appendChild(hh4x.createCard(_('Messages'), [
+			body.appendChild(createCard(_('Messages'), [
 				E('p', { 'style': 'text-align:center;color:var(--text-color-medium);padding:2em 0;' }, [_('No messages in ' + smsViewState.key + '.')])
 			]));
 		} else {
-			var rows = [];
-			for (var i = 0; i < smsList.length; i++) {
-				var sms = smsList[i];
-				var sender = Array.isArray(sms.PhoneNumber) ? sms.PhoneNumber[0] : (sms.PhoneNumber || '--');
-				var matched = hh4x.resolveContact(contactMap, sender);
-				var content = sms.SMSContent || '';
+			let rows = [];
 
-				var senderNode = matched
-					? E('span', { 'class': 'hh4x-sms-sender', 'dir': 'auto' }, [
-						matched.name,
-						E('span', { 'class': 'hh4x-resolved-sub', 'dir': 'ltr' }, [sender])
-					])
-					: E('span', { 'class': 'hh4x-sms-sender' }, [sender]);
+			for (let i = 0; i < smsList.length; i++) {
+				let sms = smsList[i];
+				let sender = Array.isArray(sms.PhoneNumber) ? sms.PhoneNumber[0] : (sms.PhoneNumber || '--');
+				let content = sms.SMSContent || '';
 
-				var row = E('div', { 'class': 'hh4x-sms-row' + (sms.SMSType == 1 ? ' hh4x-sms-unread' : '') }, [
-					E('div', { 'class': 'hh4x-sms-check-cell' }, [
-						E('input', {
-							'type': 'checkbox',
-							'class': 'hh4x-sms-check',
-							'value': sms.SMSId,
-							'click': function (e) { e.stopPropagation(); }
-						})
-					]),
+				let checkCell = E('div', { 'class': 'hh4x-sms-check-cell' }, [
+					E('input', {
+						'type': 'checkbox',
+						'class': 'hh4x-sms-check',
+						'value': sms.SMSId,
+						'click': function (e) { e.stopPropagation(); }
+					})
+				]);
+
+				let row = E('div', { 'class': 'hh4x-sms-row' }, [
+					checkCell,
 					E('div', { 'class': 'hh4x-sms-body' }, [
 						E('div', { 'class': 'hh4x-sms-header' }, [
-							senderNode,
-							E('span', { 'class': 'hh4x-sms-date' }, [sms.SMSTime || '--'])
+							E('span', { 'class': 'hh4x-sms-sender' }, [sender]),
+							E('span', { 'class': 'hh4x-sms-date' }, [formatDate(sms.SMSTime)])
 						]),
-						E('div', { 'class': 'hh4x-sms-preview', 'dir': 'auto' }, [truncate(content, 100)]),
+						E('div', { 'class': 'hh4x-sms-preview' }, [truncate(content, 100)]),
 						E('div', { 'class': 'hh4x-sms-id hh4x-sms-footer' }, (function () {
-							var items = [E('span', {}, ['ID: ' + sms.SMSId])];
+							let items = [E('span', {}, ['ID: ' + sms.SMSId])];
 							if (currentKey === 'inbox') {
-								var otp = extractOtp(content);
+								let otp = extractOtp(content);
 								if (otp) {
-									var label = _('Copy OTP: ') + otp;
-									var otpBtn = E('button', {
+									let label = _('Copy OTP: ') + otp;
+									let otpBtn = E('button', {
 										'class': 'cbi-button cbi-button-action hh4x-otp-btn hh4x-otp-pill',
 										'click': function (e) {
 											e.stopPropagation();
-											hh4x.copyToClipboard(otp, otpBtn, label);
+											copyToClipboard(otp, otpBtn, label);
 										}
 									}, [label]);
 									items.push(otpBtn);
@@ -485,7 +504,7 @@ return view.extend({
 					])
 				]);
 
-				row.addEventListener('click', (function (smsData) {
+				row.addEventListener('click', (function(smsData) {
 					return function (e) {
 						if (e.target.type !== 'checkbox') showSMSModal(smsData);
 					};
@@ -494,23 +513,10 @@ return view.extend({
 				rows.push(row);
 			}
 
-			var pagination = hh4x.createPagination(smsViewState.page, totalPages, function (nextPage) {
-				smsViewState.page = nextPage;
-				reloadSMSList();
-			});
-
-			body.appendChild(hh4x.createCard(_('Messages (%d)').format(smsList.length), [
+			body.appendChild(createCard(_('Messages (' + smsList.length + ')'), [
 				toolbar,
-				E('div', { 'class': 'hh4x-sms-list' }, rows),
-				pagination
-			].filter(Boolean)));
-		}
-
-		// Handle #compose=<number> deep link from Contacts or Call Log
-		if (!simBlocked && window.location.hash && window.location.hash.indexOf('#compose=') === 0) {
-			var preNum = decodeURIComponent(window.location.hash.slice(9));
-			history.replaceState(null, '', window.location.pathname + window.location.search);
-			setTimeout(function () { showComposeModal(preNum); }, 50);
+				E('div', { 'class': 'hh4x-sms-list' }, rows)
+			]));
 		}
 
 		return body;

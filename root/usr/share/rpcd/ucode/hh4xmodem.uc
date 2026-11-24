@@ -2,7 +2,6 @@
 'use strict';
 import { popen } from 'fs';
 import * as pack from 'hh4xmodem.pack';
-import * as contacts from 'hh4xmodem.contacts';
 
 function shellquote(value) {
 	if (value == null) value = '';
@@ -32,7 +31,6 @@ function get_profile_list() { return pack_call('GetProfileList'); }
 function get_current_profile() { return pack_call('getCurrentProfile'); }
 function get_pin_state() { return pack_call('GetAutoValidatePinState'); }
 function get_usage_settings() { return pack_call('GetUsageSettings'); }
-
 function reboot_modem() {
 	let r = pack_call('SetDeviceReboot');
 	if (r != null && type(r) == 'object' && r.error == null) return { error: null, response: r };
@@ -77,6 +75,10 @@ function valid_ipv4(value) {
 	return true;
 }
 
+// The stock WebUI only checks the dotted-quad format. Reject unusable
+// addresses too, and when the LAN settings are readable require the host to
+// be in the modem's LAN subnet. A wrong value would otherwise be accepted by
+// the UI and only rejected (or silently ignored) by the modem.
 function validate_dmz_ip(ip, lan) {
 	if (!valid_ipv4(ip)) return 'Enter a valid IPv4 address';
 	let p = split(ip, '.');
@@ -91,6 +93,8 @@ function validate_dmz_ip(ip, lan) {
 	if (valid_ipv4(lan_ip)) {
 		if (ip == lan_ip) return 'The DMZ host cannot be the modem itself';
 		let l = split(lan_ip, '.');
+		// The modem LAN is normally a /24. For other masks fall back to the
+		// modem's own validation instead of guessing.
 		if (mask == '255.255.255.0' && (p[0] != l[0] || p[1] != l[1] || p[2] != l[2]))
 			return sprintf('The DMZ host must be inside the modem LAN subnet (%s.%s.%s.x)', l[0], l[1], l[2]);
 	}
@@ -104,6 +108,8 @@ function set_upnp(enabled) {
 		return { error: null, upnp_switch: want };
 	let r = pack_call('SetUpnpSettings', sprintf('{"upnp_switch":%d}', want));
 	if (r != null && r.error != null) return r;
+	// A SET is usually acknowledged with {}; trust the stored value, not the
+	// empty reply. Retry briefly in case the modem applies it asynchronously.
 	let last = null;
 	for (let i = 0; i < 3; i++) {
 		if (i > 0) sleep(300);
@@ -135,6 +141,8 @@ function set_dmz(enabled, ip) {
 		let problem = validate_dmz_ip(ip, lan);
 		if (problem != null) return { error: problem, code: -1 };
 	} else {
+		// Keep the stored host address when turning DMZ off, so a later
+		// re-enable starts from the same address (the stock UI does this).
 		ip = cur.dmz_ip || ip;
 	}
 	let r = pack_call('setDMZInfo', sprintf('{"dmz_status":%d,"dmz_ip":%J}', want, ip));
@@ -166,10 +174,21 @@ function unlock_puk(puk, new_pin) {
 	puk = trim(puk);
 	new_pin = trim(new_pin);
 	if (!length(puk) || !length(new_pin)) return { error: 'Empty PUK or PIN', code: -1 };
+	// Per the stock WebUI (build.js): UnlockPuk takes {"Pin":<new PIN>,"Puk":<PUK>}
+	// (CamelCase: Pin/Puk — NOT "PUK"/"NewPin"). A wrong PIN new value or a
+	// rejected PUK makes the modem return {} or an error; an empty/ignored
+	// response must NOT be reported as success.
 	let r = pack_call('UnlockPuk', sprintf('{"Pin":%J,"Puk":%J}', new_pin, puk));
 	if (!pack_ok(r)) return r || { error: 'Unlock failed', code: -1 };
+	// Verify the lock actually cleared: the modem may echo {} on a bad PUK
+	// (pack_ok would accept it). Re-query the SIM state to confirm.
 	let s = get_sim_status();
 	let st = (s && s.SIMState != null) ? s.SIMState : null;
+	// Success only if the SIM actually left the locked states. A wrong/exhausted
+	// PUK leaves it at 3 (PUK required), 4 (SIM lock) or 5 (PUK blocked); all must
+	// fail, since pack_ok() accepts the empty {} the modem echoes on a bad PUK.
+	// State 2 (PIN required) is expected right after a successful PUK unlock
+	// (the new PIN is prompted on next boot), and 7 means Ready.
 	if (st == 7 || st == 2) return { error: null };
 	return { error: 'PUK rejected, still locked, or blocked', code: -1 };
 }
@@ -188,6 +207,9 @@ function change_pin_state(pin, enable) {
 	if (pin == null) return { error: 'Missing PIN', code: -1 };
 	pin = trim(pin);
 	if (!length(pin)) return { error: 'Empty PIN', code: -1 };
+	// Per the stock WebUI: enabling PIN protection sends State:1 and
+	// disabling it sends State:0. The Pin must be the SIM's current PIN;
+	// a wrong PIN decrements PinRemainingTimes.
 	let state = enable ? 1 : 0;
 	let r = pack_call('ChangePinState', sprintf('{"Pin":%J,"State":%d}', pin, state));
 	if (pack_ok(r)) return { error: null };
@@ -224,6 +246,13 @@ function clear_call_log() {
 	return r || { error: 'Clear failed', code: -1 };
 }
 
+
+// SIM state 7 = Ready (see simStateLabel in the UI). Anything else means the
+// modem cannot reach the network at all, so a request that needs the SIM would
+// either hang until it times out or come back with a misleading modem error:
+// with no SIM, SendUSSD never replies (the UI sees an XHR timeout) and SendSMS
+// reports "Fail with store space full" (060603), because the SMS store is
+// unusable without one. Reject up front with the real reason instead.
 function sim_blocked_reason(state) {
 	if (state == 0) return 'no SIM is inserted';
 	if (state == 1) return 'the SIM is not ready yet';
@@ -236,8 +265,12 @@ function sim_blocked_reason(state) {
 	return 'the SIM is not ready (state ' + state + ')';
 }
 
+// Returns an error object when the SIM is unusable, or null when it is ready.
 function sim_blocked_error(action) {
 	let s = pack_call('GetSimStatus');
+	// A failed read must not block the action: the modem may be busy, and
+	// refusing to send on a transport hiccup would be worse than letting the
+	// modem answer for itself.
 	if (type(s) != 'object' || s.error != null || s.SIMState == null)
 		return null;
 	let state = int(s.SIMState);
@@ -252,12 +285,17 @@ function send_ussd(code) {
 	if (!length(code)) return { error: 'Empty USSD code', code: -1 };
 	let blocked = sim_blocked_error('send a USSD code');
 	if (blocked != null) return blocked;
+	// end any lingering session so we start a fresh request
 	pack_call('SetUSSDEnd', '{}');
-	sleep(1500);
+	sleep(2000);
 	let r = pack_call('SendUSSD', sprintf('{"UssdType":0,"UssdContent":%J}', code));
 	if (r == null || r.error != null) return r || { error: 'Send failed', code: -1 };
 	let res;
 	let end_session = function() { pack_call('SetUSSDEnd', '{}'); };
+	// The modem caches the last USSD reply in g_ussd_data and only updates it
+	// when a *new* indication arrives. Right after SendUSSD, the first polls
+	// still return that stale cache with UssdType:0. A genuine result arrives
+	// only with UssdType 1 (DONE) or 2 (MORE), so we must skip UssdType:0.
 	let is_real = function(r) {
 		return r && r.error == null && (r.UssdType == 1 || r.UssdType == 2) && r.UssdContent;
 	};
@@ -279,9 +317,8 @@ function ussd_end_session() {
 }
 
 function set_usage_settings(settings) {
-	if (settings == null || type(settings) != 'object')
-		return { error: 'Missing settings', code: -1 };
-	let r = pack_call('SetUsageSettings', sprintf('%J', settings));
+	if (settings == null) return { error: 'Missing settings', code: -1 };
+	let r = pack_call('SetUsageSettings', json(settings));
 	if (r != null && r.error == null) return { error: null };
 	return r || { error: 'Set failed', code: -1 };
 }
@@ -292,8 +329,17 @@ function unlock_sim(code, lock_state) {
 	if (!length(code)) return { error: 'Empty unlock code', code: -1 };
 	let r = pack_call('UnlockSimlock', sprintf('{"SIMLockCode":%J,"SIMLockState":%d}', code, int(lock_state || 0)));
 	if (pack_ok(r)) return { error: null };
+	// A structured error (has "message", e.g. a wrong NCK code) is a real
+	// failure — normalize it to { error: ... } so the JS caller's
+	// r.error == null test actually catches it.
 	if (type(r) == 'object' && r.message != null)
 		return { error: sprintf('SIM unlock failed: %s', r.message), code: r.code ?? -1 };
+	// pack_call-level error (connection dropped after sending the unlock).
+	// The modem reboots after accepting a valid unlock code, so a dropped
+	// connection here is expected on success — but we must not mask genuine
+	// connectivity failures (e.g. modem was never reachable). Return the
+	// actual error so the caller can show it; the UI reloads and re-checks
+	// SIM state to confirm whether the unlock took effect.
 	return r;
 }
 
@@ -312,22 +358,15 @@ function set_network_mode(mode) {
 
 function get_sms_data(key, page) {
 	key = key || 'inbox';
-	page = int(page || 1);
-	let batch = pack.call_batch([
-		{ method: 'GetSMSListByContactNum', params: sprintf('{"Page":%d,"key":%J}', page, key) },
-		'GetSMSStorageState',
-		'GetSimStatus'
-	]);
-	return {
-		GetSMSListByContactNum: batch.GetSMSListByContactNum || { SMSList: [] },
-		GetSMSStorageState: batch.GetSMSStorageState || {},
-		GetSimStatus: batch.GetSimStatus || null
-	};
+	page = page || 1;
+	let sms = pack_call('GetSMSListByContactNum', sprintf('{"Page":%d,"key":%J}', page, key)) || { SMSList: [] };
+	let storage = pack_call('GetSMSStorageState') || {};
+	return { GetSMSListByContactNum: sms, GetSMSStorageState: storage };
 }
 
 function get_sms_list(key, page) {
 	key = key || 'inbox';
-	page = int(page || 1);
+	page = page || 1;
 	return pack_call('GetSMSListByContactNum', sprintf('{"Page":%d,"key":%J}', page, key)) || { error: 'No result', SMSList: [] };
 }
 
@@ -357,7 +396,7 @@ function delete_sms(id) {
 	if (id < 1) return { error: 'Invalid SMS ID', code: -1 };
 	let r = pack_call('DeleteSMS', sprintf('{"DelFlag":3,"SMSArray":[%d]}', id));
 	if (r != null && r.error == null) return { error: null };
-	return r || { error: 'Delete failed', code: -1 };
+	return r || { error: "Delete failed", code: -1 };
 }
 
 function delete_sms_bulk(ids) {
@@ -372,73 +411,26 @@ function delete_sms_bulk(ids) {
 	let params = sprintf('{"DelFlag":3,"SMSArray":[%s]}', arr);
 	let r = pack_call('DeleteSMS', params);
 	if (r != null && r.error == null) return { error: null, count: length(ids) };
-	return r || { error: 'Delete failed', code: -1 };
+	return r || { error: "Delete failed", code: -1 };
 }
 
 function get_send_sms_result() { return pack_call('GetSendSMSResult') || { error: 'No result' }; }
 
 function get_calllog_data(list_type, page) {
 	list_type = int(list_type || 0);
-	page = int(page || 1);
-	let batch = pack.call_batch([
-		{ method: 'GetCallLogList', params: sprintf('{"Page":%d,"ListType":%d}', page, list_type) },
-		'GetCallLogCountInfo'
-	]);
-	return {
-		GetCallLogList: batch.GetCallLogList || { CallLogList: [] },
-		GetCallLogCountInfo: batch.GetCallLogCountInfo || {}
-	};
+	page = page || 1;
+	let logs = pack_call('GetCallLogList', sprintf('{"Page":%d,"ListType":%d}', page, list_type)) || { CallLogList: [] };
+	let counts = pack_call('GetCallLogCountInfo') || {};
+	return { GetCallLogList: logs, GetCallLogCountInfo: counts };
 }
 
 function get_call_log_list(list_type, page) {
 	list_type = int(list_type || 0);
-	page = int(page || 1);
+	page = page || 1;
 	return pack_call('GetCallLogList', sprintf('{"Page":%d,"ListType":%d}', page, list_type)) || { error: 'No result', CallLogList: [] };
 }
 
 function get_call_log_count() { return pack_call('GetCallLogCountInfo') || { error: 'No result' }; }
-
-/* ---- SIM Contact Book ---- */
-
-function get_contacts(force) {
-	let blocked = sim_blocked_error('read SIM contacts');
-	if (blocked != null) return { error: blocked.error, code: blocked.code, simState: blocked.simState, contacts: [] };
-	return contacts.list(truthy(force));
-}
-
-function get_contacts_cached() {
-	return contacts.get_cached();
-}
-
-function save_contact(index_val, name, number) {
-	let blocked = sim_blocked_error('save a SIM contact');
-	if (blocked != null) return blocked;
-	return contacts.save(index_val, name, number);
-}
-
-function delete_contact(index_val) {
-	let blocked = sim_blocked_error('delete a SIM contact');
-	if (blocked != null) return blocked;
-	return contacts.remove(index_val);
-}
-
-function delete_contacts_bulk(indices) {
-	let blocked = sim_blocked_error('delete SIM contacts');
-	if (blocked != null) return blocked;
-	return contacts.remove_bulk(indices);
-}
-
-function import_contacts(entries) {
-	let blocked = sim_blocked_error('import SIM contacts');
-	if (blocked != null) return blocked;
-	return contacts.import_bulk(entries);
-}
-
-/* ---- Batched status queries ---- */
-
-const POLL_METHODS = [
-	'GetNetworkInfo', 'GetConnectionState', 'GetSimStatus', 'GetUsageRecord'
-];
 
 const CORE_METHODS = [
 	'GetNetworkInfo', 'GetSystemInfo', 'GetSystemStatus',
@@ -452,23 +444,18 @@ const EXTRA_METHODS = [
 	'GetProfileList', 'getCurrentProfile'
 ];
 
-function get_poll() { return pack.call_batch(POLL_METHODS); }
 function get_all() { return pack.call_batch(CORE_METHODS); }
 function get_all_full() { return pack.call_batch([...CORE_METHODS, ...EXTRA_METHODS]); }
 
 function get_dashboard() {
-	let batch = pack.call_batch([
-		'GetSystemInfo', 'GetSystemStatus', 'GetNetworkInfo',
-		'GetConnectionState', 'GetNetworkSettings', 'GetSimStatus', 'GetUsageRecord'
-	]);
 	return {
-		device: batch.GetSystemInfo || {},
-		status: batch.GetSystemStatus || {},
-		signal: batch.GetNetworkInfo || {},
-		connection: batch.GetConnectionState || {},
-		network: batch.GetNetworkSettings || {},
-		sim: batch.GetSimStatus || {},
-		usage: batch.GetUsageRecord || {},
+		device: get_system_info(),
+		status: get_status(),
+		signal: get_signal(),
+		connection: get_connection_state(),
+		network: get_network_settings(),
+		sim: get_sim_status(),
+		usage: get_usage(),
 		timestamp: time()
 	};
 }
@@ -483,10 +470,14 @@ function reset_modem() {
 function set_connection_settings(settings) {
 	if (settings == null) return { error: 'Missing settings', code: -1 };
 	if (type(settings) != 'object') return { error: 'Settings must be an object', code: -1 };
+	// Read current settings so we echo back ALL fields the modem expects.
+	// Bail out on failure: pack_call always returns an object, so a failed read
+	// would otherwise be overwritten with hardcoded defaults.
 	let cur = pack_call('GetConnectionSettings');
 	if (type(cur) != 'object' || cur.error != null)
 		return { error: 'Failed to read current connection settings', code: -1 };
 	for (let k, v in settings) cur[k] = v;
+	// Fallbacks match the UI preselects (0 = Manual / IPv4, 600 s idle).
 	let connectMode = int(cur.ConnectMode ?? 0);
 	let pdpType = int(cur.PdpType ?? 0);
 	let roamingConnect = int(cur.RoamingConnect ?? 1);
@@ -531,6 +522,9 @@ function set_default_profile(profile_id) {
 
 const NV_HELPER = '/usr/bin/hh4xmodem-nv';
 
+// The NV helper does the real work (staging on the modem, state, verification).
+// It always prints a single JSON object, so a broken helper is reported as an
+// error object instead of an exception.
 function nv_call(args) {
 	let fd = popen(sprintf('%s %s 2>/dev/null', NV_HELPER, args));
 	if (!fd) return { ok: false, error: 'Failed to execute the NV helper', code: -1 };
@@ -543,6 +537,9 @@ function nv_call(args) {
 	return (type(res) == 'object') ? res : { ok: false, error: 'Invalid response from the NV helper', raw: out, code: -1 };
 }
 
+// Live IMEI plus the pending-change state.  `status` also resolves a staged
+// change: as soon as the modem reports the new IMEI it is marked verified and
+// the staging files are removed.
 function get_imei() { return nv_call('status'); }
 
 function set_imei(imei) {
@@ -551,66 +548,60 @@ function set_imei(imei) {
 }
 
 function cancel_imei_change() { return nv_call('cancel'); }
+
 function get_nv_imei() { return nv_call('read'); }
 function backup_nv_partitions() { return nv_call('backup'); }
 function restore_nv_backup(imei) { return set_imei(imei); }
 
 const methods = {
-	get_system_info:         { call: function() { return get_system_info(); } },
-	get_status:              { call: function() { return get_status(); } },
-	get_signal:              { call: function() { return get_signal(); } },
-	get_network_settings:    { call: function() { return get_network_settings(); } },
-	set_network_mode:        { args: { mode: 0 }, call: function(request) { return set_network_mode(request.args.mode); } },
-	get_usage:               { call: get_usage },
-	get_usage_settings:      { call: get_usage_settings },
-	get_connection_state:    { call: get_connection_state },
-	get_sim_status:          { call: get_sim_status },
-	get_sms_storage:         { call: get_sms_storage },
-	get_sms_settings:        { call: get_sms_settings },
-	get_lan_settings:        { call: get_lan_settings },
-	get_upnp:                { call: get_upnp },
-	get_dmz:                 { call: get_dmz },
-	set_upnp:                { args: { enabled: true }, call: function(request) { return set_upnp(request.args.enabled); } },
-	set_dmz:                 { args: { enabled: false, ip: '' }, call: function(request) { return set_dmz(request.args.enabled, request.args.ip); } },
-	get_language:            { call: get_language },
-	get_connection_settings: { call: get_connection_settings },
-	get_registration_state:  { call: get_registration_state },
-	get_profile_list:        { call: get_profile_list },
-	get_current_profile:     { call: get_current_profile },
-	get_pin_state:           { call: get_pin_state },
-	reboot_modem:            { call: reboot_modem },
-	send_connect:            { call: send_connect },
-	disconnect_modem:        { call: disconnect_modem },
-	unlock_pin:              { args: { pin: '' }, call: function(request) { return unlock_pin(request.args.pin); } },
-	unlock_puk:              { args: { puk: '', new_pin: '' }, call: function(request) { return unlock_puk(request.args.puk, request.args.new_pin); } },
-	change_pin:              { args: { old_pin: '', new_pin: '' }, call: function(request) { return change_pin(request.args.old_pin, request.args.new_pin); } },
-	change_pin_state:        { args: { pin: '', enable: true }, call: function(request) { return change_pin_state(request.args.pin, request.args.enable); } },
-	clear_usage:             { call: clear_usage },
-	clear_call_log:          { call: clear_call_log },
-	send_ussd:               { args: { code: '' }, call: function(request) { return send_ussd(request.args.code); } },
-	ussd_end_session:        { call: ussd_end_session },
-	set_usage_settings:      { args: { settings: {} }, call: function(request) { return set_usage_settings(request.args.settings); } },
-	unlock_sim:              { args: { code: '', lock_state: 0 }, call: function(request) { return unlock_sim(request.args.code, request.args.lock_state); } },
-	get_sms_data:            { args: { key: 'inbox', page: 1 }, call: function(request) { return get_sms_data(request.args.key, request.args.page); } },
-	get_sms_list:            { args: { key: 'inbox', page: 1 }, call: function(request) { return get_sms_list(request.args.key, request.args.page); } },
-	get_single_sms:          { args: { id: 0 }, call: function(request) { return get_single_sms(request.args.id); } },
-	send_sms:                { args: { phone: '', content: '' }, call: function(request) { return send_sms(request.args.phone, request.args.content); } },
-	delete_sms:              { args: { id: 0 }, call: function(request) { return delete_sms(request.args.id); } },
-	delete_sms_bulk:         { args: { ids: [] }, call: function(request) { return delete_sms_bulk(request.args.ids); } },
-	get_send_sms_result:     { call: get_send_sms_result },
-	get_calllog_data:        { args: { list_type: 0, page: 1 }, call: function(request) { return get_calllog_data(request.args.list_type, request.args.page); } },
-	get_call_log_list:       { args: { list_type: 0, page: 1 }, call: function(request) { return get_call_log_list(request.args.list_type, request.args.page); } },
-	get_call_log_count:      { call: get_call_log_count },
-	get_contacts:            { args: { force: false }, call: function(request) { return get_contacts(request.args.force); } },
-	get_contacts_cached:     { call: get_contacts_cached },
-	save_contact:            { args: { index: 0, name: '', number: '' }, call: function(request) { return save_contact(request.args.index, request.args.name, request.args.number); } },
-	delete_contact:          { args: { index: 0 }, call: function(request) { return delete_contact(request.args.index); } },
-	delete_contacts_bulk:    { args: { indices: [] }, call: function(request) { return delete_contacts_bulk(request.args.indices); } },
-	import_contacts:         { args: { contacts: [] }, call: function(request) { return import_contacts(request.args.contacts); } },
-	get_poll:                { call: get_poll },
-	get_dashboard:           { call: get_dashboard },
-	get_all:                 { call: get_all },
-	get_all_full:            { call: get_all_full },
+	get_system_info:        { call: function() { return get_system_info(); } },
+	get_status:             { call: function() { return get_status(); } },
+	get_signal:             { call: function() { return get_signal(); } },
+	get_network_settings:   { call: function() { return get_network_settings(); } },
+	set_network_mode:       { args: { mode: 0 }, call: function(request) { return set_network_mode(request.args.mode); } },
+	get_usage:              { call: get_usage },
+	get_usage_settings:     { call: get_usage_settings },
+	get_connection_state:   { call: get_connection_state },
+	get_sim_status:         { call: get_sim_status },
+	get_sms_storage:        { call: get_sms_storage },
+	get_sms_settings:       { call: get_sms_settings },
+	get_lan_settings:       { call: get_lan_settings },
+	get_upnp:               { call: get_upnp },
+	get_dmz:                { call: get_dmz },
+	set_upnp:               { args: { enabled: true }, call: function(request) { return set_upnp(request.args.enabled); } },
+	set_dmz:                { args: { enabled: false, ip: '' }, call: function(request) { return set_dmz(request.args.enabled, request.args.ip); } },
+	get_language:           { call: get_language },
+	get_connection_settings:{ call: get_connection_settings },
+	get_registration_state: { call: get_registration_state },
+	get_profile_list:       { call: get_profile_list },
+	get_current_profile:    { call: get_current_profile },
+	get_pin_state:          { call: get_pin_state },
+	reboot_modem:           { call: reboot_modem },
+	send_connect:           { call: send_connect },
+	disconnect_modem:       { call: disconnect_modem },
+	unlock_pin:             { args: { pin: '' }, call: function(request) { return unlock_pin(request.args.pin); } },
+	unlock_puk:             { args: { puk: '', new_pin: '' }, call: function(request) { return unlock_puk(request.args.puk, request.args.new_pin); } },
+	change_pin:             { args: { old_pin: '', new_pin: '' }, call: function(request) { return change_pin(request.args.old_pin, request.args.new_pin); } },
+	change_pin_state:       { args: { pin: '', enable: true }, call: function(request) { return change_pin_state(request.args.pin, request.args.enable); } },
+	clear_usage:            { call: clear_usage },
+	clear_call_log:         { call: clear_call_log },
+	send_ussd:              { args: { code: '' }, call: function(request) { return send_ussd(request.args.code); } },
+	ussd_end_session:       { call: ussd_end_session },
+	set_usage_settings:     { args: { settings: {} }, call: function(request) { return set_usage_settings(request.args.settings); } },
+	unlock_sim:             { args: { code: '', lock_state: 0 }, call: function(request) { return unlock_sim(request.args.code, request.args.lock_state); } },
+	get_sms_data:           { args: { key: 'inbox', page: 1 }, call: function(request) { return get_sms_data(request.args.key, request.args.page); } },
+	get_sms_list:           { args: { key: 'inbox', page: 1 }, call: function(request) { return get_sms_list(request.args.key, request.args.page); } },
+	get_single_sms:         { args: { id: 0 }, call: function(request) { return get_single_sms(request.args.id); } },
+	send_sms:               { args: { phone: '', content: '' }, call: function(request) { return send_sms(request.args.phone, request.args.content); } },
+	delete_sms:             { args: { id: 0 }, call: function(request) { return delete_sms(request.args.id); } },
+	delete_sms_bulk:        { args: { ids: [] }, call: function(request) { return delete_sms_bulk(request.args.ids); } },
+	get_send_sms_result:    { call: get_send_sms_result },
+	get_calllog_data:       { args: { list_type: 0, page: 1 }, call: function(request) { return get_calllog_data(request.args.list_type, request.args.page); } },
+	get_call_log_list:      { args: { list_type: 0, page: 1 }, call: function(request) { return get_call_log_list(request.args.list_type, request.args.page); } },
+	get_call_log_count:     { call: get_call_log_count },
+	get_dashboard:          { call: get_dashboard },
+	get_all:                { call: get_all },
+	get_all_full:           { call: get_all_full },
 	set_connection_settings: { args: { settings: {} }, call: function(request) { return set_connection_settings(request.args.settings); } },
 	edit_profile:            { args: { profile: {} }, call: function(request) { return edit_profile(request.args.profile); } },
 	delete_profile:          { args: { profile_id: 0 }, call: function(request) { return delete_profile(request.args.profile_id); } },
@@ -619,9 +610,9 @@ const methods = {
 	get_imei:                { call: get_imei },
 	set_imei:                { args: { imei: '' }, call: function(request) { return set_imei(request.args.imei); } },
 	cancel_imei_change:      { call: cancel_imei_change },
-	backup_nv_partitions:    { call: backup_nv_partitions },
+	backup_nv_partitions:   { call: backup_nv_partitions },
 	restore_nv_backup:       { args: { imei: '' }, call: function(request) { return restore_nv_backup(request.args.imei); } },
-	reset_modem:             { call: reset_modem },
+	reset_modem:            { call: reset_modem },
 };
 
 return { 'hh4xmodem': methods };

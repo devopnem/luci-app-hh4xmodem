@@ -17,46 +17,24 @@ const ACK_PREFIX_LEN  = 28;
 const PACK_HEADER_LEN = 44;
 const PAYLOAD_START   = ACK_PREFIX_LEN + PACK_HEADER_LEN;
 const MAX_RECV_LOOPS  = 8;
-const CONFIG_TTL_SEC  = 30;
-
-let cached_cfg = null;
-let cached_cfg_at = 0;
 
 export function get_config(opts) {
 	opts = opts || {};
 	let ip = opts.ip || getenv('MODEM_IP');
 	let port = opts.port || getenv('MODEM_PORT');
 
-	if (ip && port) {
-		return { ip: ip, port: int(port) || 2016 };
+	if (!ip || !port) {
+		try {
+			let ctx = uci.cursor();
+			if (!ip) ip = ctx.get('hh4xmodem', 'settings', 'modem_ip');
+			if (!port) port = ctx.get('hh4xmodem', 'settings', 'modem_port');
+			ctx.unload();
+		} catch (e) {}
 	}
-
-	let now = time();
-	if (!opts.fresh && cached_cfg && (now - cached_cfg_at) < CONFIG_TTL_SEC) {
-		return {
-			ip: ip || cached_cfg.ip,
-			port: int(port) || cached_cfg.port
-		};
-	}
-
-	let uci_ip = null;
-	let uci_port = null;
-	try {
-		let ctx = uci.cursor();
-		uci_ip = ctx.get('hh4xmodem', 'settings', 'modem_ip');
-		uci_port = ctx.get('hh4xmodem', 'settings', 'modem_port');
-		ctx.unload();
-	} catch (e) {}
-
-	cached_cfg = {
-		ip: uci_ip || '192.168.225.1',
-		port: int(uci_port) || 2016
-	};
-	cached_cfg_at = now;
 
 	return {
-		ip: ip || cached_cfg.ip,
-		port: int(port) || cached_cfg.port
+		ip: ip || '192.168.225.1',
+		port: int(port) || 2016
 	};
 };
 
@@ -104,7 +82,7 @@ function extract_json(response) {
 	return null;
 }
 
-function open_and_send(cfg, method, params, timeout_sec) {
+function open_and_send(cfg, method, params) {
 	let addr = socket.sockaddr({
 		family: socket.AF_INET,
 		address: cfg.ip,
@@ -113,9 +91,8 @@ function open_and_send(cfg, method, params, timeout_sec) {
 	let sock = socket.create(socket.AF_INET, socket.SOCK_STREAM);
 	if (!sock) return { error: 'Failed to create socket', code: -1 };
 
-	let tv = [timeout_sec || 1, 0];
-	sock.setopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, tv);
-	sock.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, tv);
+	sock.setopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, [1, 0]);
+	sock.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, [1, 0]);
 
 	if (!sock.connect(addr)) {
 		sock.close();
@@ -130,21 +107,11 @@ function read_reply(sock) {
 	let response = '';
 	let clean = null;
 	for (let i = 0; i < MAX_RECV_LOOPS && clean == null; i++) {
-		let chunk = null;
-		try { chunk = sock.recv(65536); } catch (e) { chunk = null; }
-		// Empty string means peer closed the connection (EOF); stop immediately
-		// instead of looping through sleep() retries.
-		if (chunk === '') break;
-		if (chunk == null) {
-			if (length(response) > 0) {
-				clean = extract_json(response);
-				if (clean != null) break;
-			}
-			sleep(100);
-			continue;
-		}
+		let chunk = '';
+		try { chunk = sock.recv(65536) || ''; } catch (e) { chunk = ''; }
 		response += chunk;
 		clean = extract_json(response);
+		if (clean == null && length(chunk) == 0) sleep(200);
 	}
 	sock.close();
 	if (clean == null)
@@ -154,7 +121,7 @@ function read_reply(sock) {
 
 export function call_raw(method, params, opts) {
 	let cfg = get_config(opts);
-	let opened = open_and_send(cfg, method, params, opts ? opts.timeout : null);
+	let opened = open_and_send(cfg, method, params);
 	if (opened.error != null) return opened;
 	return read_reply(opened.sock);
 };
@@ -169,9 +136,10 @@ export function call(method, params, opts) {
 	return parsed;
 };
 
-// Execute a list of pack methods in parallel chunks without spawning subshells.
-// Each entry may be either a method name string (parameterless) or an object
-// { method: '...', params: ... , key: '...' }.
+// Execute a list of parameterless pack methods in parallel chunks without
+// spawning subshells. Opening and sending each chunk up front lets core_app
+// process all methods in the chunk concurrently while replies buffer in the
+// kernel TCP receive queue.
 export function call_batch(methods, opts) {
 	let cfg = get_config(opts);
 	let chunk_size = (opts && opts.chunk_size) || 6;
@@ -183,13 +151,10 @@ export function call_batch(methods, opts) {
 		if (end > length(methods)) end = length(methods);
 
 		for (let i = base; i < end; i++) {
-			let entry = methods[i];
-			let m = (type(entry) == 'object') ? entry.method : entry;
-			let p = (type(entry) == 'object' && entry.params != null) ? entry.params : '{}';
-			let k = (type(entry) == 'object' && entry.key) ? entry.key : m;
-			let opened = open_and_send(cfg, m, p, opts ? opts.timeout : null);
+			let m = methods[i];
+			let opened = open_and_send(cfg, m, '{}');
 			if (opened.sock)
-				push(pending, { key: k, sock: opened.sock });
+				push(pending, { method: m, sock: opened.sock });
 		}
 
 		for (let item in pending) {
@@ -199,9 +164,9 @@ export function call_batch(methods, opts) {
 			try { parsed = json(r.raw); } catch (e) { parsed = null; }
 			if (parsed != null) {
 				if (type(parsed) == 'object' && parsed.result != null)
-					out[item.key] = parsed.result;
+					out[item.method] = parsed.result;
 				else
-					out[item.key] = parsed;
+					out[item.method] = parsed;
 			}
 		}
 	}
