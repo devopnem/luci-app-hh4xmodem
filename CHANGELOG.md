@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0-r1] — 2026-11-26
+
+### Added
+- **SIM Contact Book (`Contacts` page).** View, search, add, edit, and delete
+  (single or bulk) contacts stored on the SIM card, with SIM storage usage and
+  field limit display plus VCF/CSV import and export.
+- Implemented via the modem's native `pack` protocol (`getPhoneBookInitState`,
+  `getPhoneBookInfo`, `getPhoneBooklistInfo`, `addPhoneBook`, `editPhoneBook`,
+  `deletePhoneBook` on TCP 2016) — no `sms-tool` or serial port dependency.
+
 ## [1.2.0-r2] — 2026-11-24
 
 ### Fixed

@@ -47,6 +47,7 @@ The dashboard has five tabs:
 - **SMS** — read inbox, sent, drafts and outbox, read individual messages, send new ones, delete single or bulk. Verification codes are detected and can be copied with one click.
 - **USSD** — run USSD codes such as balance and data-remaining checks, with proper session handling and configurable one-tap presets.
 - **Call log** — missed, received, dialled and combined call history with paging.
+- **SIM Contact Book** — view, search, add, edit, delete (single or bulk), and import/export (VCF/CSV) SIM contacts via the modem's native pack protocol.
 - **IMEI / NV maintenance** — read the live IMEI, download an NV 550 backup, and stage a validated IMEI change that the modem applies on restart, with automatic verification afterwards.
 - **SIM & modem maintenance** — PIN/PUK unlock, PIN change and enable/disable, modem reboot/reset, profile (APN) add/edit/delete/default.
 - **Quiet modem log** — a small service answers the modem's 1 Hz "system start" poll so stock OpenWrt does not fill the kernel log with `system start` / `get fd list fail!`.

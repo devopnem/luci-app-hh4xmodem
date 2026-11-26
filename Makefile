@@ -7,8 +7,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-hh4xmodem
-PKG_VERSION:=1.2.0
-PKG_RELEASE:=2
+PKG_VERSION:=1.3.0
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE
@@ -30,8 +30,8 @@ endef
 define Package/luci-app-hh4xmodem/description
   LuCI interface to monitor and control the MDM9207 modem in HH40V and HH41V
   routers. Provides signal quality monitoring, network mode selection, data
-  usage tracking, SMS management, USSD codes, call logs, IMEI/NV maintenance
-  and device information.
+  usage tracking, SMS management, USSD codes, call logs, SIM contact book,
+  IMEI/NV maintenance and device information.
 endef
 
 define Package/luci-app-hh4xmodem/conffiles
@@ -73,6 +73,8 @@ define Package/luci-app-hh4xmodem/install
 		$(1)/usr/share/rpcd/ucode/
 	$(INSTALL_DIR) $(1)/usr/share/ucode/hh4xmodem
 	$(INSTALL_DATA) ./root/usr/share/ucode/hh4xmodem/pack.uc \
+		$(1)/usr/share/ucode/hh4xmodem/
+	$(INSTALL_DATA) ./root/usr/share/ucode/hh4xmodem/contacts.uc \
 		$(1)/usr/share/ucode/hh4xmodem/
 endef
 

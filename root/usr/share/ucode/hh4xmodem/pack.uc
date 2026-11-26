@@ -82,7 +82,7 @@ function extract_json(response) {
 	return null;
 }
 
-function open_and_send(cfg, method, params) {
+function open_and_send(cfg, method, params, timeout_sec) {
 	let addr = socket.sockaddr({
 		family: socket.AF_INET,
 		address: cfg.ip,
@@ -91,8 +91,9 @@ function open_and_send(cfg, method, params) {
 	let sock = socket.create(socket.AF_INET, socket.SOCK_STREAM);
 	if (!sock) return { error: 'Failed to create socket', code: -1 };
 
-	sock.setopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, [1, 0]);
-	sock.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, [1, 0]);
+	let tv = [timeout_sec || 1, 0];
+	sock.setopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, tv);
+	sock.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, tv);
 
 	if (!sock.connect(addr)) {
 		sock.close();
@@ -107,11 +108,19 @@ function read_reply(sock) {
 	let response = '';
 	let clean = null;
 	for (let i = 0; i < MAX_RECV_LOOPS && clean == null; i++) {
-		let chunk = '';
-		try { chunk = sock.recv(65536) || ''; } catch (e) { chunk = ''; }
+		let chunk = null;
+		try { chunk = sock.recv(65536); } catch (e) { chunk = null; }
+		if (chunk === '') break;
+		if (chunk == null) {
+			if (length(response) > 0) {
+				clean = extract_json(response);
+				if (clean != null) break;
+			}
+			sleep(150);
+			continue;
+		}
 		response += chunk;
 		clean = extract_json(response);
-		if (clean == null && length(chunk) == 0) sleep(200);
 	}
 	sock.close();
 	if (clean == null)
@@ -121,7 +130,7 @@ function read_reply(sock) {
 
 export function call_raw(method, params, opts) {
 	let cfg = get_config(opts);
-	let opened = open_and_send(cfg, method, params);
+	let opened = open_and_send(cfg, method, params, opts ? opts.timeout : null);
 	if (opened.error != null) return opened;
 	return read_reply(opened.sock);
 };
@@ -136,10 +145,8 @@ export function call(method, params, opts) {
 	return parsed;
 };
 
-// Execute a list of parameterless pack methods in parallel chunks without
-// spawning subshells. Opening and sending each chunk up front lets core_app
-// process all methods in the chunk concurrently while replies buffer in the
-// kernel TCP receive queue.
+// Execute a list of pack methods in parallel chunks without spawning subshells.
+// Entries may be method name strings (parameterless) or { method, params, key }.
 export function call_batch(methods, opts) {
 	let cfg = get_config(opts);
 	let chunk_size = (opts && opts.chunk_size) || 6;
@@ -151,10 +158,13 @@ export function call_batch(methods, opts) {
 		if (end > length(methods)) end = length(methods);
 
 		for (let i = base; i < end; i++) {
-			let m = methods[i];
-			let opened = open_and_send(cfg, m, '{}');
+			let entry = methods[i];
+			let m = (type(entry) == 'object') ? entry.method : entry;
+			let p = (type(entry) == 'object' && entry.params != null) ? entry.params : '{}';
+			let k = (type(entry) == 'object' && entry.key) ? entry.key : m;
+			let opened = open_and_send(cfg, m, p, opts ? opts.timeout : null);
 			if (opened.sock)
-				push(pending, { method: m, sock: opened.sock });
+				push(pending, { key: k, sock: opened.sock });
 		}
 
 		for (let item in pending) {
@@ -164,9 +174,9 @@ export function call_batch(methods, opts) {
 			try { parsed = json(r.raw); } catch (e) { parsed = null; }
 			if (parsed != null) {
 				if (type(parsed) == 'object' && parsed.result != null)
-					out[item.method] = parsed.result;
+					out[item.key] = parsed.result;
 				else
-					out[item.method] = parsed;
+					out[item.key] = parsed;
 			}
 		}
 	}

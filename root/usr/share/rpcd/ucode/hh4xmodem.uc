@@ -2,6 +2,7 @@
 'use strict';
 import { popen } from 'fs';
 import * as pack from 'hh4xmodem.pack';
+import * as contacts from 'hh4xmodem.contacts';
 
 function shellquote(value) {
 	if (value == null) value = '';
@@ -432,6 +433,39 @@ function get_call_log_list(list_type, page) {
 
 function get_call_log_count() { return pack_call('GetCallLogCountInfo') || { error: 'No result' }; }
 
+function get_contacts() {
+	let blocked = sim_blocked_error('read SIM contacts');
+	if (blocked != null) {
+		blocked.contacts = [];
+		return blocked;
+	}
+	return contacts.list();
+}
+
+function save_contact(pb_id, name, number) {
+	let blocked = sim_blocked_error('save a SIM contact');
+	if (blocked != null) return blocked;
+	return contacts.save(pb_id, name, number);
+}
+
+function delete_contact(pb_id) {
+	let blocked = sim_blocked_error('delete a SIM contact');
+	if (blocked != null) return blocked;
+	return contacts.remove(pb_id);
+}
+
+function delete_contacts_bulk(ids) {
+	let blocked = sim_blocked_error('delete SIM contacts');
+	if (blocked != null) return blocked;
+	return contacts.remove_bulk(ids);
+}
+
+function import_contacts(entries) {
+	let blocked = sim_blocked_error('import SIM contacts');
+	if (blocked != null) return blocked;
+	return contacts.import_bulk(entries);
+}
+
 const CORE_METHODS = [
 	'GetNetworkInfo', 'GetSystemInfo', 'GetSystemStatus',
 	'GetConnectionState', 'GetSimStatus', 'GetUsageRecord'
@@ -599,6 +633,11 @@ const methods = {
 	get_calllog_data:       { args: { list_type: 0, page: 1 }, call: function(request) { return get_calllog_data(request.args.list_type, request.args.page); } },
 	get_call_log_list:      { args: { list_type: 0, page: 1 }, call: function(request) { return get_call_log_list(request.args.list_type, request.args.page); } },
 	get_call_log_count:     { call: get_call_log_count },
+	get_contacts:           { call: get_contacts },
+	save_contact:           { args: { pb_id: '', name: '', number: '' }, call: function(request) { return save_contact(request.args.pb_id, request.args.name, request.args.number); } },
+	delete_contact:         { args: { pb_id: '' }, call: function(request) { return delete_contact(request.args.pb_id); } },
+	delete_contacts_bulk:   { args: { ids: [] }, call: function(request) { return delete_contacts_bulk(request.args.ids); } },
+	import_contacts:        { args: { contacts: [] }, call: function(request) { return import_contacts(request.args.contacts); } },
 	get_dashboard:          { call: get_dashboard },
 	get_all:                { call: get_all },
 	get_all_full:           { call: get_all_full },
